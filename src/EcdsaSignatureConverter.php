@@ -52,7 +52,7 @@ final readonly class EcdsaSignatureConverter
 
         $componentLength = self::COMPONENT_LENGTHS[$keySizeBits];
 
-        // Parse DER: SEQUENCE { INTEGER r, INTEGER s }
+        // Parse DER SEQUENCE envelope
         ['offset' => $offset, 'contentEnd' => $seqEnd] = self::readDer($der);
 
         // Validate SEQUENCE spans the entire input (no trailing data after SEQUENCE)
@@ -60,7 +60,13 @@ final readonly class EcdsaSignatureConverter
             throw new InvalidArgumentException('DER signature contains trailing data after SEQUENCE.');
         }
 
+        // Extract INTEGER components R and S
         ['offset' => $offset, 'data' => $r, 'tag' => $rTag] = self::readDer($der, $offset);
+
+        if ($offset >= $seqEnd) {
+            throw new InvalidArgumentException('DER SEQUENCE must contain two INTEGER components (R and S), but only one was found.');
+        }
+
         ['offset' => $endPos, 'data' => $s, 'tag' => $sTag] = self::readDer($der, $offset);
 
         if ($rTag !== 0x02 || $sTag !== 0x02) {
@@ -72,8 +78,10 @@ final readonly class EcdsaSignatureConverter
             throw new InvalidArgumentException('DER SEQUENCE content length does not match its declared length.');
         }
 
-        // Defense-in-depth: readDer returns null for constructed types and rejects zero-length
-        // INTEGERs (X.690 Section 8.3.1), so this condition is normally unreachable.
+        // Defense-in-depth: the tag check above ensures both R and S have INTEGER tag (0x02),
+        // which is always primitive, so readDer returns string data (not null). Additionally,
+        // readDer rejects zero-length INTEGERs per X.690 Section 8.3.1. This condition is
+        // therefore normally unreachable.
         // @codeCoverageIgnoreStart
         if (! is_string($r) || ! is_string($s) || $r === '' || $s === '') {
             throw new InvalidArgumentException('Failed to extract R and S components from DER signature.');
@@ -156,6 +164,8 @@ final readonly class EcdsaSignatureConverter
             throw new InvalidArgumentException("DER INTEGER {$label} component is negative, which is invalid for ECDSA signatures.");
         }
 
+        // Strip leading zeros. For a zero-valued integer (e.g., "\x00"), ltrim returns ""
+        // which is valid — the caller pads it to the required component length.
         $value = ltrim($value, "\x00");
 
         if (strlen($value) > $componentLength) {
@@ -231,7 +241,7 @@ final readonly class EcdsaSignatureConverter
         $pos = $offset;
 
         // ASN.1 tag byte (X.690 Section 8.1.2.2):
-        //   bits 7-6 = class (0x00 = Universal), bit 5 = constructed (0x20), bits 4-0 = tag number
+        //   bits 7-6 = class (Universal=0b00), bit 5 = constructed flag, bits 4-0 = tag number
         $tagByte = ord($der[$pos]);
 
         // Reject non-Universal class tags (X.690 Section 8.1.2.2: class bits are bits 7-6).
@@ -279,8 +289,9 @@ final readonly class EcdsaSignatureConverter
                 throw new InvalidArgumentException('DER data truncated: multi-byte length field is incomplete.');
             }
 
-            // Guard against integer overflow on 32-bit PHP where $len could wrap
-            // (untestable on 64-bit platforms where 4-byte shifts cannot produce negative values)
+            // Guard against integer overflow on 32-bit PHP: accumulating 4 length bytes via
+            // left-shifts can set the sign bit of a 32-bit signed integer, producing a negative
+            // $len. Untestable on 64-bit platforms where PHP_INT_SIZE >= 8.
             // @codeCoverageIgnoreStart
             if ($len < 0) {
                 throw new InvalidArgumentException('DER length field overflowed integer range.');

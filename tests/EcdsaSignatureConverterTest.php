@@ -17,7 +17,7 @@ final class EcdsaSignatureConverterTest extends TestCase
     /**
      * Build a simple DER SEQUENCE containing two INTEGER TLVs from raw R and S values.
      *
-     * Only supports short-form length encoding (values < 128 bytes each).
+     * Only supports short-form DER length encoding (each component's byte length must be < 128).
      * Intended for crafting test inputs, not production use.
      */
     private static function buildSimpleDer(string $rValue, string $sValue): string
@@ -41,6 +41,7 @@ final class EcdsaSignatureConverterTest extends TestCase
         ]);
 
         if ($key === false) {
+            $firstError = openssl_error_string() ?: 'unknown error';
             // Fallback for PHP 8.2/8.3
             $key = openssl_pkey_new([
                 'curve_name'       => $curve,
@@ -50,7 +51,7 @@ final class EcdsaSignatureConverterTest extends TestCase
 
         if (! $key instanceof OpenSSLAsymmetricKey) {
             $error = openssl_error_string() ?: 'unknown error';
-            self::fail("Failed to create EC key for curve '{$curve}': {$error}");
+            self::fail("Failed to create EC key for curve '{$curve}': {$error}".(isset($firstError) ? " (first attempt: {$firstError})" : ''));
         }
 
         return $key;
@@ -96,7 +97,7 @@ final class EcdsaSignatureConverterTest extends TestCase
     {
         $ecKey = self::createEcKey();
 
-        $this->assertTrue(openssl_sign('test-payload', $der, $ecKey, OPENSSL_ALGO_SHA256));
+        $this->assertTrue(openssl_sign('test-payload', $der, $ecKey, OPENSSL_ALGO_SHA256), 'openssl_sign failed: '.(openssl_error_string() ?: 'unknown error'));
 
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('trailing data');
@@ -301,8 +302,12 @@ final class EcdsaSignatureConverterTest extends TestCase
         $raw = str_repeat("\x00", 64);
 
         $der = EcdsaSignatureConverter::rawToDer($raw, 256);
-        $rawAgain = EcdsaSignatureConverter::derToRaw($der, 256);
 
+        // R=0, S=0 → DER: SEQUENCE(6) { INTEGER(1) 0x00, INTEGER(1) 0x00 }
+        $expectedDer = "\x30\x06\x02\x01\x00\x02\x01\x00";
+        $this->assertSame($expectedDer, $der);
+
+        $rawAgain = EcdsaSignatureConverter::derToRaw($der, 256);
         $this->assertSame($raw, $rawAgain);
     }
 
@@ -579,11 +584,11 @@ final class EcdsaSignatureConverterTest extends TestCase
     }
 
     #[Test]
-    #[TestDox('derToRaw: throws when DER read offset exceeds data length (SEQUENCE has only one child)')]
-    public function der_to_raw_throws_for_offset_exceeds_data(): void
+    #[TestDox('derToRaw: throws when SEQUENCE contains only one INTEGER component')]
+    public function der_to_raw_throws_for_single_component(): void
     {
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('out of bounds');
+        $this->expectExceptionMessage('must contain two INTEGER components');
 
         // SEQUENCE(len=6) containing only one INTEGER(len=4) that consumes all SEQUENCE content
         EcdsaSignatureConverter::derToRaw("\x30\x06\x02\x04\x00\x00\x00\x01", 256);
@@ -648,7 +653,7 @@ final class EcdsaSignatureConverterTest extends TestCase
 
         for ($i = 0; $i < 5; $i++) {
             $payload = "payload-{$keySize}-{$i}";
-            $this->assertTrue(openssl_sign($payload, $der, $ecKey, $algo));
+            $this->assertTrue(openssl_sign($payload, $der, $ecKey, $algo), 'openssl_sign failed: '.(openssl_error_string() ?: 'unknown error'));
 
             $raw = EcdsaSignatureConverter::derToRaw($der, $keySize);
             $this->assertSame($rawLen, strlen($raw));
