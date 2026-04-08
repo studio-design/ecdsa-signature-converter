@@ -123,8 +123,8 @@ final class EcdsaSignatureConverterTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('multi-byte length field is incomplete');
 
-        // SEQUENCE(len=6) -> INTEGER with long-form length claiming 5 bytes but only 4 remain
-        EcdsaSignatureConverter::derToRaw("\x30\x06\x02\x85\x00\x00\x00\x00", 256);
+        // SEQUENCE(len=6) -> INTEGER(len=1, val=0x01) + INTEGER with 3-byte long-form length but only 2 bytes remain
+        EcdsaSignatureConverter::derToRaw("\x30\x06\x02\x01\x01\x02\x83\x00", 256);
     }
 
     // ---------------------------------------------------------------
@@ -356,7 +356,7 @@ final class EcdsaSignatureConverterTest extends TestCase
     #[TestDox('derToRaw: handles DER with non-minimal integer encoding (extra leading zeros)')]
     public function der_to_raw_handles_non_minimal_integers(): void
     {
-        // SEQUENCE { INTEGER(0x00 0x00 0x01), INTEGER(0x00 0x01) } — non-minimal but valid
+        // SEQUENCE { INTEGER(0x00 0x00 0x01), INTEGER(0x00 0x01) } — not strictly valid DER (non-minimal encoding), but tolerated by this parser
         $der = "\x30\x09\x02\x03\x00\x00\x01\x02\x02\x00\x01";
 
         $raw = EcdsaSignatureConverter::derToRaw($der, 256);
@@ -469,6 +469,112 @@ final class EcdsaSignatureConverterTest extends TestCase
 
         // SEQUENCE containing element with tag 0x1F (signals multi-byte tag number)
         EcdsaSignatureConverter::derToRaw("\x30\x06\x1F\x01\x01\x02\x01\x01", 256);
+    }
+
+    #[Test]
+    #[TestDox('derToRaw: throws when S component has non-INTEGER tag (R is valid INTEGER)')]
+    public function der_to_raw_throws_for_non_integer_s_tag(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('must be INTEGERs');
+
+        // SEQUENCE(len=6) containing INTEGER(tag=0x02, len=1, val=0x01) + OCTET_STRING(tag=0x04, len=1, val=0x01)
+        EcdsaSignatureConverter::derToRaw("\x30\x06\x02\x01\x01\x04\x01\x01", 256);
+    }
+
+    #[Test]
+    #[TestDox('derToRaw: throws for negative DER INTEGER (high bit set without sign padding)')]
+    public function der_to_raw_throws_for_negative_integer(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('negative');
+
+        // SEQUENCE(len=6) containing INTEGER(val=0xFF = -1) + INTEGER(val=0x01)
+        EcdsaSignatureConverter::derToRaw("\x30\x06\x02\x01\xFF\x02\x01\x01", 256);
+    }
+
+    #[Test]
+    #[TestDox('derToRaw: throws when SEQUENCE content length does not match parsed children')]
+    public function der_to_raw_throws_for_sequence_length_mismatch(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('SEQUENCE content length');
+
+        // SEQUENCE(len=8) but children only consume 6 bytes, with 2 bytes garbage inside SEQUENCE
+        EcdsaSignatureConverter::derToRaw("\x30\x08\x02\x01\x01\x02\x01\x01\x00\x00", 256);
+    }
+
+    #[Test]
+    #[TestDox('derToRaw: throws for non-minimal DER length encoding (long-form for value < 128)')]
+    public function der_to_raw_throws_for_non_minimal_length(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('non-minimal');
+
+        // SEQUENCE with long-form length encoding 0x81 0x06 (value 6 fits in short form)
+        // followed by INTEGER(len=1, val=0x01) + INTEGER(len=1, val=0x01)
+        EcdsaSignatureConverter::derToRaw("\x30\x81\x06\x02\x01\x01\x02\x01\x01", 256);
+    }
+
+    #[Test]
+    #[TestDox('derToRaw: throws when DER length field exceeds 4 bytes')]
+    public function der_to_raw_throws_for_excessive_length_bytes(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('exceeds 4 bytes');
+
+        // SEQUENCE(len=11) -> INTEGER with 5-byte length field (0x85) — unreasonably large
+        EcdsaSignatureConverter::derToRaw("\x30\x0B\x02\x85\x00\x00\x00\x00\x01\x02\x01\x01\x01", 256);
+    }
+
+    #[Test]
+    #[TestDox('derToRaw: throws when DER read offset exceeds data length (SEQUENCE has only one child)')]
+    public function der_to_raw_throws_for_offset_exceeds_data(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('read offset');
+
+        // SEQUENCE(len=6) containing only one INTEGER(len=4) that consumes all SEQUENCE content
+        EcdsaSignatureConverter::derToRaw("\x30\x06\x02\x04\x00\x00\x00\x01", 256);
+    }
+
+    #[Test]
+    #[TestDox('derToRaw: throws when DER INTEGER S value exceeds component length')]
+    public function der_to_raw_throws_for_oversized_s_integer(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('exceeds');
+
+        // SEQUENCE containing normal R (1 byte) + oversized S (33 non-zero bytes, exceeds 32-byte ES256 component)
+        $rValue = "\x01";
+        $sValue = str_repeat("\x01", 33);
+        $derR = "\x02".chr(strlen($rValue)).$rValue;
+        $derS = "\x02".chr(strlen($sValue)).$sValue;
+        $body = $derR.$derS;
+        $der = "\x30".chr(strlen($body)).$body;
+
+        EcdsaSignatureConverter::derToRaw($der, 256);
+    }
+
+    #[Test]
+    #[TestDox('rawToDer: rejects 128-byte input for ES512 (regression: old code expected 128 instead of 132)')]
+    public function raw_to_der_throws_for_old_es512_length(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('exactly 132 bytes');
+
+        // 128 bytes = old incorrect length (512/8 * 2); correct is 132 (ceil(521/8) * 2)
+        EcdsaSignatureConverter::rawToDer(str_repeat("\x01", 128), 512);
+    }
+
+    #[Test]
+    #[TestDox('rawToDer: rejects wrong-length input for ES384')]
+    public function raw_to_der_throws_for_wrong_es384_length(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('exactly 96 bytes');
+
+        EcdsaSignatureConverter::rawToDer(str_repeat("\x01", 64), 384);
     }
 
     /**

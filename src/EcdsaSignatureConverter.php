@@ -25,14 +25,14 @@ final readonly class EcdsaSignatureConverter
     private const COMPONENT_LENGTHS = [
         256 => 32,  // P-256: 256 / 8
         384 => 48,  // P-384: 384 / 8
-        512 => 66,  // P-521: ceil(521 / 8)
+        512 => 66,  // P-521 (ES512): ceil(521 / 8) — JOSE uses "512", actual curve is 521 bits
     ];
 
     /**
      * Convert a DER-encoded ECDSA signature to JWS raw (R||S) format.
      *
      * @param string $der         DER-encoded ASN.1 SEQUENCE containing two INTEGERs (r, s)
-     * @param int    $keySizeBits ECDSA key size in bits (256 for ES256, 384 for ES384, 512 for ES512)
+     * @param int    $keySizeBits ECDSA key size in bits as used by JOSE algorithm names (256 for ES256/P-256, 384 for ES384/P-384, 512 for ES512/P-521). Note: ES512 uses the P-521 curve (521 bits), yielding 66-byte components.
      *
      * @return string Raw signature: R || S, each component padded to the curve's fixed byte length (32 for ES256, 48 for ES384, 66 for ES512)
      *
@@ -53,7 +53,13 @@ final readonly class EcdsaSignatureConverter
         $componentLength = self::COMPONENT_LENGTHS[$keySizeBits];
 
         // Parse DER: SEQUENCE { INTEGER r, INTEGER s }
-        [$offset] = self::readDer($der);
+        [$offset, , , $seqEnd] = self::readDer($der);
+
+        // Validate SEQUENCE spans the entire input (no trailing data after SEQUENCE)
+        if ($seqEnd !== strlen($der)) {
+            throw new InvalidArgumentException('DER signature contains trailing data after SEQUENCE.');
+        }
+
         [$offset, $r, $rTag] = self::readDer($der, $offset);
         [$endPos, $s, $sTag] = self::readDer($der, $offset);
 
@@ -61,12 +67,19 @@ final readonly class EcdsaSignatureConverter
             throw new InvalidArgumentException('DER signature R and S components must be INTEGERs (tag 0x02).');
         }
 
-        if ($endPos !== strlen($der)) {
-            throw new InvalidArgumentException('DER signature contains trailing data after R and S components.');
+        // Validate children consumed all SEQUENCE content (no intra-SEQUENCE garbage)
+        if ($endPos !== $seqEnd) {
+            throw new InvalidArgumentException('DER SEQUENCE content length does not match its declared length.');
         }
 
         if (! is_string($r) || $r === '' || ! is_string($s) || $s === '') {
             throw new InvalidArgumentException('Failed to extract R and S components from DER signature.');
+        }
+
+        // DER INTEGERs are signed two's complement. If the high bit of the first byte
+        // is set without a leading 0x00, the value is negative — invalid for ECDSA R/S.
+        if ((ord($r[0]) & 0x80) !== 0 || (ord($s[0]) & 0x80) !== 0) {
+            throw new InvalidArgumentException('DER INTEGER R or S component is negative, which is invalid for ECDSA signatures.');
         }
 
         // Strip DER sign-padding: DER INTEGERs prepend 0x00 when the high bit is set
@@ -91,7 +104,7 @@ final readonly class EcdsaSignatureConverter
      * Convert a JWS raw (R||S) ECDSA signature to ASN.1 DER format.
      *
      * @param string $raw         Raw signature: R || S (each component: 32 bytes for ES256, 48 for ES384, 66 for ES512)
-     * @param int    $keySizeBits ECDSA key size in bits (256 for ES256, 384 for ES384, 512 for ES512)
+     * @param int    $keySizeBits ECDSA key size in bits as used by JOSE algorithm names (256 for ES256/P-256, 384 for ES384/P-384, 512 for ES512/P-521). Note: ES512 uses the P-521 curve (521 bits), yielding 66-byte components.
      *
      * @return string DER-encoded ASN.1 SEQUENCE containing two INTEGERs (r, s)
      *
@@ -176,9 +189,9 @@ final readonly class EcdsaSignatureConverter
      * For constructed types (SEQUENCE), returns null as data — the caller
      * should continue reading child elements from the returned offset.
      * For primitive types (INTEGER), returns the raw value bytes.
-     * For BIT STRING, skips the unused-bits octet.
+     * For BIT STRING, skips the unused-bits octet (included for generality; not used by ECDSA signature methods).
      *
-     * @return array{int, string|null, int} New offset, decoded value, and raw tag byte
+     * @return array{int, string|null, int, int} New offset, decoded value, raw tag byte, and content-end position
      *
      * @throws InvalidArgumentException
      */
@@ -192,7 +205,7 @@ final readonly class EcdsaSignatureConverter
 
         $pos = $offset;
 
-        // Bit 5 of ASN.1 tag byte: 0 = primitive, 1 = constructed (SEQUENCE, SET, etc.)
+        // Constructed/primitive bit (bit 6 in X.690 / bit 5 zero-indexed) of ASN.1 tag byte
         $tagByte = ord($der[$pos]);
         $constructed = ($tagByte >> 5) & 0x01;
         $type = $tagByte & 0x1F;
@@ -216,6 +229,11 @@ final readonly class EcdsaSignatureConverter
                 throw new InvalidArgumentException('DER indefinite-length encoding (0x80) is not permitted.');
             }
 
+            if ($n > 4) {
+                throw new InvalidArgumentException('DER length field exceeds 4 bytes, which is unreasonably large for ECDSA signatures.');
+            }
+
+            $nBytes = $n;
             $len = 0;
 
             while ($n-- && $pos < $size) {
@@ -226,11 +244,22 @@ final readonly class EcdsaSignatureConverter
             if ($n >= 0) {
                 throw new InvalidArgumentException('DER data truncated: multi-byte length field is incomplete.');
             }
+
+            // DER requires shortest possible length encoding
+            if ($len < 0x80) {
+                throw new InvalidArgumentException('DER non-minimal length encoding: value fits in short form.');
+            }
+            if ($nBytes > 1 && $len < (1 << (8 * ($nBytes - 1)))) {
+                throw new InvalidArgumentException('DER non-minimal length encoding: uses more octets than necessary.');
+            }
         }
 
         if ($pos + $len > $size) {
             throw new InvalidArgumentException('DER data truncated: value extends beyond data length.');
         }
+
+        // Content-end position: for all types, this is the byte after the last content byte
+        $contentEnd = $pos + $len;
 
         // Value
         if ($type === 0x03) {
@@ -248,6 +277,6 @@ final readonly class EcdsaSignatureConverter
             $data = null;
         }
 
-        return [$pos, $data, $tagByte];
+        return [$pos, $data, $tagByte, $contentEnd];
     }
 }
