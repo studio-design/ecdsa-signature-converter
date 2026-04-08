@@ -15,7 +15,7 @@ use StudioDesign\EcdsaSignature\EcdsaSignatureConverter;
 final class EcdsaSignatureConverterTest extends TestCase
 {
     /**
-     * Create an EC P-256 key compatible with both PHP 8.2/8.3 and PHP 8.4+.
+     * Create an EC key for the given curve, compatible with both PHP 8.2/8.3 and PHP 8.4+.
      */
     private static function createEcKey(string $curve = 'prime256v1'): OpenSSLAsymmetricKey
     {
@@ -47,7 +47,7 @@ final class EcdsaSignatureConverterTest extends TestCase
     {
         $ecKey = self::createEcKey();
 
-        openssl_sign('test-payload', $der, $ecKey, OPENSSL_ALGO_SHA256);
+        $this->assertTrue(openssl_sign('test-payload', $der, $ecKey, OPENSSL_ALGO_SHA256));
 
         $raw = EcdsaSignatureConverter::derToRaw($der, 256);
 
@@ -63,7 +63,7 @@ final class EcdsaSignatureConverterTest extends TestCase
         $publicKey = openssl_pkey_get_public($details['key']);
 
         $payload = 'test-payload';
-        openssl_sign($payload, $der, $ecKey, OPENSSL_ALGO_SHA256);
+        $this->assertTrue(openssl_sign($payload, $der, $ecKey, OPENSSL_ALGO_SHA256));
 
         $raw = EcdsaSignatureConverter::derToRaw($der, 256);
         $derAgain = EcdsaSignatureConverter::rawToDer($raw, 256);
@@ -108,7 +108,7 @@ final class EcdsaSignatureConverterTest extends TestCase
     {
         $ecKey = self::createEcKey();
 
-        openssl_sign('test-payload', $der, $ecKey, OPENSSL_ALGO_SHA256);
+        $this->assertTrue(openssl_sign('test-payload', $der, $ecKey, OPENSSL_ALGO_SHA256));
 
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('trailing data');
@@ -140,7 +140,7 @@ final class EcdsaSignatureConverterTest extends TestCase
         $publicKey = openssl_pkey_get_public($details['key']);
 
         $payload = 'test-payload';
-        openssl_sign($payload, $der, $ecKey, OPENSSL_ALGO_SHA256);
+        $this->assertTrue(openssl_sign($payload, $der, $ecKey, OPENSSL_ALGO_SHA256));
 
         // DER -> raw -> DER should produce a verifiable signature
         $raw = EcdsaSignatureConverter::derToRaw($der, 256);
@@ -193,7 +193,7 @@ final class EcdsaSignatureConverterTest extends TestCase
 
         for ($i = 0; $i < 10; $i++) {
             $payload = "payload-{$i}";
-            openssl_sign($payload, $der, $ecKey, OPENSSL_ALGO_SHA256);
+            $this->assertTrue(openssl_sign($payload, $der, $ecKey, OPENSSL_ALGO_SHA256));
 
             $raw = EcdsaSignatureConverter::derToRaw($der, 256);
             $derAgain = EcdsaSignatureConverter::rawToDer($raw, 256);
@@ -213,7 +213,7 @@ final class EcdsaSignatureConverterTest extends TestCase
     {
         $ecKey = self::createEcKey('secp384r1');
 
-        openssl_sign('test-payload', $der, $ecKey, OPENSSL_ALGO_SHA384);
+        $this->assertTrue(openssl_sign('test-payload', $der, $ecKey, OPENSSL_ALGO_SHA384));
 
         $raw = EcdsaSignatureConverter::derToRaw($der, 384);
 
@@ -229,7 +229,7 @@ final class EcdsaSignatureConverterTest extends TestCase
         $publicKey = openssl_pkey_get_public($details['key']);
 
         $payload = 'test-payload';
-        openssl_sign($payload, $der, $ecKey, OPENSSL_ALGO_SHA384);
+        $this->assertTrue(openssl_sign($payload, $der, $ecKey, OPENSSL_ALGO_SHA384));
 
         $raw = EcdsaSignatureConverter::derToRaw($der, 384);
         $derAgain = EcdsaSignatureConverter::rawToDer($raw, 384);
@@ -247,7 +247,7 @@ final class EcdsaSignatureConverterTest extends TestCase
     {
         $ecKey = self::createEcKey('secp521r1');
 
-        openssl_sign('test-payload', $der, $ecKey, OPENSSL_ALGO_SHA512);
+        $this->assertTrue(openssl_sign('test-payload', $der, $ecKey, OPENSSL_ALGO_SHA512));
 
         $raw = EcdsaSignatureConverter::derToRaw($der, 512);
 
@@ -263,7 +263,7 @@ final class EcdsaSignatureConverterTest extends TestCase
         $publicKey = openssl_pkey_get_public($details['key']);
 
         $payload = 'test-payload';
-        openssl_sign($payload, $der, $ecKey, OPENSSL_ALGO_SHA512);
+        $this->assertTrue(openssl_sign($payload, $der, $ecKey, OPENSSL_ALGO_SHA512));
 
         $raw = EcdsaSignatureConverter::derToRaw($der, 512);
         $derAgain = EcdsaSignatureConverter::rawToDer($raw, 512);
@@ -405,7 +405,7 @@ final class EcdsaSignatureConverterTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('value extends beyond data length');
 
-        // SEQUENCE(len=6), INTEGER(len=5) but only 2 bytes of value remain
+        // SEQUENCE(len=6), INTEGER(len=5) but only 4 bytes of value remain
         EcdsaSignatureConverter::derToRaw("\x30\x06\x02\x05\x01\x02\x03\x04", 256);
     }
 
@@ -431,6 +431,46 @@ final class EcdsaSignatureConverterTest extends TestCase
         EcdsaSignatureConverter::derToRaw("\x30\x08\x02\x00\x02\x04\x00\x00\x00\x01", 256);
     }
 
+    #[Test]
+    #[TestDox('derToRaw: throws when DER INTEGER value exceeds component length')]
+    public function der_to_raw_throws_for_oversized_integer(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('exceeds');
+
+        // SEQUENCE containing INTEGER with 33 non-zero bytes (exceeds 32-byte ES256 component)
+        $rValue = str_repeat("\x01", 33);
+        $sValue = "\x01";
+        $derR = "\x02".chr(strlen($rValue)).$rValue;
+        $derS = "\x02".chr(strlen($sValue)).$sValue;
+        $body = $derR.$derS;
+        $der = "\x30".chr(strlen($body)).$body;
+
+        EcdsaSignatureConverter::derToRaw($der, 256);
+    }
+
+    #[Test]
+    #[TestDox('derToRaw: throws for DER indefinite-length encoding (0x80)')]
+    public function der_to_raw_throws_for_indefinite_length(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('indefinite-length');
+
+        // SEQUENCE with indefinite-length encoding (0x80) — forbidden in DER
+        EcdsaSignatureConverter::derToRaw("\x30\x80\x02\x01\x01\x02\x01\x01", 256);
+    }
+
+    #[Test]
+    #[TestDox('derToRaw: throws for multi-byte ASN.1 tag number')]
+    public function der_to_raw_throws_for_multi_byte_tag(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('multi-byte tag');
+
+        // SEQUENCE containing element with tag 0x1F (signals multi-byte tag number)
+        EcdsaSignatureConverter::derToRaw("\x30\x06\x1F\x01\x01\x02\x01\x01", 256);
+    }
+
     /**
      * @return array<string, array{int, string, int, int}>
      */
@@ -444,7 +484,7 @@ final class EcdsaSignatureConverterTest extends TestCase
     }
 
     #[Test]
-    #[TestDox('Round-trip: multiple signatures for $keySize-bit key')]
+    #[TestDox('Round-trip: multiple signatures across key sizes')]
     #[DataProvider('keySizeProvider')]
     public function round_trip_per_key_size(int $keySize, string $curve, int $algo, int $rawLen): void
     {
@@ -454,7 +494,7 @@ final class EcdsaSignatureConverterTest extends TestCase
 
         for ($i = 0; $i < 5; $i++) {
             $payload = "payload-{$keySize}-{$i}";
-            openssl_sign($payload, $der, $ecKey, $algo);
+            $this->assertTrue(openssl_sign($payload, $der, $ecKey, $algo));
 
             $raw = EcdsaSignatureConverter::derToRaw($der, $keySize);
             $this->assertSame($rawLen, strlen($raw));

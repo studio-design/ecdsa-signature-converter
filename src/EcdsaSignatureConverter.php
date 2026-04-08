@@ -34,7 +34,7 @@ final readonly class EcdsaSignatureConverter
      * @param string $der         DER-encoded ASN.1 SEQUENCE containing two INTEGERs (r, s)
      * @param int    $keySizeBits ECDSA key size in bits (256 for ES256, 384 for ES384, 512 for ES512)
      *
-     * @return string Raw signature: R (padded to keySizeBits / 8) || S (padded to keySizeBits / 8)
+     * @return string Raw signature: R || S, each component padded to the curve's fixed byte length (32 for ES256, 48 for ES384, 66 for ES512)
      *
      * @throws InvalidArgumentException If the DER data is malformed or the key size is unsupported
      */
@@ -74,6 +74,12 @@ final readonly class EcdsaSignatureConverter
         $r = ltrim($r, "\x00");
         $s = ltrim($s, "\x00");
 
+        if (strlen($r) > $componentLength || strlen($s) > $componentLength) {
+            throw new InvalidArgumentException(
+                "DER INTEGER value exceeds {$componentLength} bytes for {$keySizeBits}-bit key.",
+            );
+        }
+
         // Pad to fixed length for JWS format
         $r = str_pad($r, $componentLength, "\x00", STR_PAD_LEFT);
         $s = str_pad($s, $componentLength, "\x00", STR_PAD_LEFT);
@@ -84,7 +90,7 @@ final readonly class EcdsaSignatureConverter
     /**
      * Convert a JWS raw (R||S) ECDSA signature to ASN.1 DER format.
      *
-     * @param string $raw         Raw signature: R || S (each component must be keySizeBits / 8 bytes)
+     * @param string $raw         Raw signature: R || S (each component: 32 bytes for ES256, 48 for ES384, 66 for ES512)
      * @param int    $keySizeBits ECDSA key size in bits (256 for ES256, 384 for ES384, 512 for ES512)
      *
      * @return string DER-encoded ASN.1 SEQUENCE containing two INTEGERs (r, s)
@@ -192,6 +198,10 @@ final readonly class EcdsaSignatureConverter
         $type = $tagByte & 0x1F;
         $pos++;
 
+        if ($type === 0x1F) {
+            throw new InvalidArgumentException('DER multi-byte tag numbers are not supported.');
+        }
+
         if ($pos >= $size) {
             throw new InvalidArgumentException('DER data truncated: missing length byte.');
         }
@@ -201,6 +211,11 @@ final readonly class EcdsaSignatureConverter
 
         if ($len & 0x80) {
             $n = $len & 0x7F;
+
+            if ($n === 0) {
+                throw new InvalidArgumentException('DER indefinite-length encoding (0x80) is not permitted.');
+            }
+
             $len = 0;
 
             while ($n-- && $pos < $size) {
