@@ -21,7 +21,7 @@ use InvalidArgumentException;
  */
 final readonly class EcdsaSignatureConverter
 {
-    /** @var array<int, int> Map of JOSE key-size identifier (in bits) to component byte length */
+    /** @var array<int, int> Map of JOSE algorithm key-size number to per-component byte length */
     private const COMPONENT_LENGTHS = [
         256 => 32,  // P-256: 256 / 8
         384 => 48,  // P-384: 384 / 8
@@ -53,15 +53,15 @@ final readonly class EcdsaSignatureConverter
         $componentLength = self::COMPONENT_LENGTHS[$keySizeBits];
 
         // Parse DER: SEQUENCE { INTEGER r, INTEGER s }
-        [$offset, , , $seqEnd] = self::readDer($der);
+        ['offset' => $offset, 'contentEnd' => $seqEnd] = self::readDer($der);
 
         // Validate SEQUENCE spans the entire input (no trailing data after SEQUENCE)
         if ($seqEnd !== strlen($der)) {
             throw new InvalidArgumentException('DER signature contains trailing data after SEQUENCE.');
         }
 
-        [$offset, $r, $rTag] = self::readDer($der, $offset);
-        [$endPos, $s, $sTag] = self::readDer($der, $offset);
+        ['offset' => $offset, 'data' => $r, 'tag' => $rTag] = self::readDer($der, $offset);
+        ['offset' => $endPos, 'data' => $s, 'tag' => $sTag] = self::readDer($der, $offset);
 
         if ($rTag !== 0x02 || $sTag !== 0x02) {
             throw new InvalidArgumentException('DER signature R and S components must be INTEGERs (tag 0x02).');
@@ -72,9 +72,10 @@ final readonly class EcdsaSignatureConverter
             throw new InvalidArgumentException('DER SEQUENCE content length does not match its declared length.');
         }
 
-        // Defense-in-depth: readDer already rejects zero-length INTEGERs (X.690 Section 8.3.1).
+        // Defense-in-depth: readDer returns null for constructed types and rejects zero-length
+        // INTEGERs (X.690 Section 8.3.1), so this condition is normally unreachable.
         // @codeCoverageIgnoreStart
-        if ($r === '' || $s === '') {
+        if (! is_string($r) || ! is_string($s) || $r === '' || $s === '') {
             throw new InvalidArgumentException('Failed to extract R and S components from DER signature.');
         }
         // @codeCoverageIgnoreEnd
@@ -82,7 +83,7 @@ final readonly class EcdsaSignatureConverter
         // Validate and strip leading zeros from R and S components.
         // We intentionally tolerate non-minimal INTEGER encoding (extra leading 0x00 bytes
         // beyond the sign pad) for interoperability with non-conformant encoders, even though
-        // strict DER (X.690 Section 8.3.2) would reject them.
+        // X.690 Section 8.3.2 requires minimal encoding (no unnecessary leading zero octets beyond the sign pad).
         $r = self::validateAndStripComponent($r, 'R', $componentLength, $keySizeBits);
         $s = self::validateAndStripComponent($s, 'S', $componentLength, $keySizeBits);
 
@@ -209,11 +210,13 @@ final readonly class EcdsaSignatureConverter
     /**
      * Read a single DER tag-length-value triplet.
      *
-     * For constructed types (SEQUENCE), returns null as data — the caller
-     * should continue reading child elements from the returned offset.
-     * For primitive types (INTEGER), returns the raw value bytes.
+     * For constructed types (SEQUENCE), returns null as data and sets the offset
+     * to the start of the content area — the caller should parse children from
+     * this offset up to the content-end position.
+     * For primitive types (INTEGER), returns the raw value bytes and sets the
+     * offset to the byte after the last content byte (equal to contentEnd).
      *
-     * @return array{int, string|null, int, int} New offset, decoded value, raw tag byte, and content-end position
+     * @return array{offset: int, data: string|null, tag: int, contentEnd: int}
      *
      * @throws InvalidArgumentException
      */
@@ -312,6 +315,6 @@ final readonly class EcdsaSignatureConverter
             $pos += $len;
         }
 
-        return [$pos, $data, $tagByte, $contentEnd];
+        return ['offset' => $pos, 'data' => $data, 'tag' => $tagByte, 'contentEnd' => $contentEnd];
     }
 }

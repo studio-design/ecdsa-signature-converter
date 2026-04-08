@@ -15,6 +15,21 @@ use StudioDesign\EcdsaSignature\EcdsaSignatureConverter;
 final class EcdsaSignatureConverterTest extends TestCase
 {
     /**
+     * Build a simple DER SEQUENCE containing two INTEGER TLVs from raw R and S values.
+     *
+     * Only supports short-form length encoding (values < 128 bytes each).
+     * Intended for crafting test inputs, not production use.
+     */
+    private static function buildSimpleDer(string $rValue, string $sValue): string
+    {
+        $derR = "\x02".chr(strlen($rValue)).$rValue;
+        $derS = "\x02".chr(strlen($sValue)).$sValue;
+        $body = $derR.$derS;
+
+        return "\x30".chr(strlen($body)).$body;
+    }
+
+    /**
      * Create an EC key for the given curve, compatible with both PHP 8.2/8.3 and PHP 8.4+.
      */
     private static function createEcKey(string $curve = 'prime256v1'): OpenSSLAsymmetricKey
@@ -149,6 +164,46 @@ final class EcdsaSignatureConverterTest extends TestCase
     // ---------------------------------------------------------------
 
     #[Test]
+    #[TestDox('derToRaw: converts known DER bytes to exact raw bytes (hardcoded vector)')]
+    public function der_to_raw_known_vector(): void
+    {
+        // R=1, S=2 → DER: SEQUENCE(6) { INTEGER(1) 0x01, INTEGER(1) 0x02 }
+        $der = "\x30\x06\x02\x01\x01\x02\x01\x02";
+        $expectedRaw = str_pad("\x01", 32, "\x00", STR_PAD_LEFT).str_pad("\x02", 32, "\x00", STR_PAD_LEFT);
+
+        $this->assertSame($expectedRaw, EcdsaSignatureConverter::derToRaw($der, 256));
+    }
+
+    #[Test]
+    #[TestDox('rawToDer: converts known raw bytes to exact DER bytes (hardcoded vector)')]
+    public function raw_to_der_known_vector(): void
+    {
+        // R=1, S=2 → expected DER: SEQUENCE(6) { INTEGER(1) 0x01, INTEGER(1) 0x02 }
+        $raw = str_pad("\x01", 32, "\x00", STR_PAD_LEFT).str_pad("\x02", 32, "\x00", STR_PAD_LEFT);
+        $expectedDer = "\x30\x06\x02\x01\x01\x02\x01\x02";
+
+        $this->assertSame($expectedDer, EcdsaSignatureConverter::rawToDer($raw, 256));
+    }
+
+    #[Test]
+    #[TestDox('rawToDer: known vector with sign-padded R (high bit set)')]
+    public function raw_to_der_known_vector_sign_padded(): void
+    {
+        // R = 0xFF * 32 (needs sign-padding), S = 1 (minimal)
+        // DER R: INTEGER(33) 0x00 + 0xFF*32, DER S: INTEGER(1) 0x01
+        // SEQUENCE body = (2+33) + (2+1) = 38 bytes
+        $r = str_repeat("\xFF", 32);
+        $s = str_pad("\x01", 32, "\x00", STR_PAD_LEFT);
+        $raw = $r.$s;
+
+        $expectedDer = "\x30\x26"
+            ."\x02\x21\x00".str_repeat("\xFF", 32)
+            ."\x02\x01\x01";
+
+        $this->assertSame($expectedDer, EcdsaSignatureConverter::rawToDer($raw, 256));
+    }
+
+    #[Test]
     #[TestDox('derToRaw: throws when R or S component has non-INTEGER tag')]
     public function der_to_raw_throws_for_non_integer_tag(): void
     {
@@ -272,6 +327,70 @@ final class EcdsaSignatureConverterTest extends TestCase
     }
 
     #[Test]
+    #[TestDox('rawToDer: handles zero-value R and S for ES384')]
+    public function raw_to_der_es384_handles_both_zero(): void
+    {
+        $raw = str_repeat("\x00", 96);
+
+        $der = EcdsaSignatureConverter::rawToDer($raw, 384);
+        $rawAgain = EcdsaSignatureConverter::derToRaw($der, 384);
+
+        $this->assertSame($raw, $rawAgain);
+    }
+
+    #[Test]
+    #[TestDox('rawToDer: handles maximum-value R and S for ES384 (all 0xFF)')]
+    public function raw_to_der_es384_handles_max_values(): void
+    {
+        $raw = str_repeat("\xFF", 96);
+
+        $der = EcdsaSignatureConverter::rawToDer($raw, 384);
+        $rawAgain = EcdsaSignatureConverter::derToRaw($der, 384);
+
+        $this->assertSame($raw, $rawAgain);
+    }
+
+    #[Test]
+    #[TestDox('rawToDer: handles high-bit R for ES384 (needs sign padding in DER)')]
+    public function raw_to_der_es384_handles_high_bit_r(): void
+    {
+        $r = str_repeat("\xFF", 48);
+        $s = str_pad("\x01", 48, "\x00", STR_PAD_LEFT);
+        $raw = $r.$s;
+
+        $der = EcdsaSignatureConverter::rawToDer($raw, 384);
+        $rawAgain = EcdsaSignatureConverter::derToRaw($der, 384);
+
+        $this->assertSame($raw, $rawAgain);
+    }
+
+    #[Test]
+    #[TestDox('rawToDer: handles zero-value R and S for ES512')]
+    public function raw_to_der_es512_handles_both_zero(): void
+    {
+        $raw = str_repeat("\x00", 132);
+
+        $der = EcdsaSignatureConverter::rawToDer($raw, 512);
+        $rawAgain = EcdsaSignatureConverter::derToRaw($der, 512);
+
+        $this->assertSame($raw, $rawAgain);
+    }
+
+    #[Test]
+    #[TestDox('rawToDer: handles minimum non-zero R and S for ES512 (value = 1)')]
+    public function raw_to_der_es512_handles_min_values(): void
+    {
+        $r = str_pad("\x01", 66, "\x00", STR_PAD_LEFT);
+        $s = str_pad("\x01", 66, "\x00", STR_PAD_LEFT);
+        $raw = $r.$s;
+
+        $der = EcdsaSignatureConverter::rawToDer($raw, 512);
+        $rawAgain = EcdsaSignatureConverter::derToRaw($der, 512);
+
+        $this->assertSame($raw, $rawAgain);
+    }
+
+    #[Test]
     #[TestDox('derToRaw: throws when DER INTEGER value extends beyond data length')]
     public function der_to_raw_throws_for_truncated_value(): void
     {
@@ -312,12 +431,7 @@ final class EcdsaSignatureConverterTest extends TestCase
         $this->expectExceptionMessage('R value (33 bytes) exceeds');
 
         // SEQUENCE containing INTEGER with 33 non-zero bytes (exceeds 32-byte ES256 component)
-        $rValue = str_repeat("\x01", 33);
-        $sValue = "\x01";
-        $derR = "\x02".chr(strlen($rValue)).$rValue;
-        $derS = "\x02".chr(strlen($sValue)).$sValue;
-        $body = $derR.$derS;
-        $der = "\x30".chr(strlen($body)).$body;
+        $der = self::buildSimpleDer(str_repeat("\x01", 33), "\x01");
 
         EcdsaSignatureConverter::derToRaw($der, 256);
     }
@@ -483,12 +597,7 @@ final class EcdsaSignatureConverterTest extends TestCase
         $this->expectExceptionMessage('S value (33 bytes) exceeds');
 
         // SEQUENCE containing normal R (1 byte) + oversized S (33 non-zero bytes, exceeds 32-byte ES256 component)
-        $rValue = "\x01";
-        $sValue = str_repeat("\x01", 33);
-        $derR = "\x02".chr(strlen($rValue)).$rValue;
-        $derS = "\x02".chr(strlen($sValue)).$sValue;
-        $body = $derR.$derS;
-        $der = "\x30".chr(strlen($body)).$body;
+        $der = self::buildSimpleDer("\x01", str_repeat("\x01", 33));
 
         EcdsaSignatureConverter::derToRaw($der, 256);
     }
