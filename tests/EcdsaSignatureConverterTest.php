@@ -436,7 +436,7 @@ final class EcdsaSignatureConverterTest extends TestCase
     public function der_to_raw_throws_for_oversized_integer(): void
     {
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('exceeds');
+        $this->expectExceptionMessage('R value (33 bytes) exceeds');
 
         // SEQUENCE containing INTEGER with 33 non-zero bytes (exceeds 32-byte ES256 component)
         $rValue = str_repeat("\x01", 33);
@@ -487,7 +487,7 @@ final class EcdsaSignatureConverterTest extends TestCase
     public function der_to_raw_throws_for_negative_integer(): void
     {
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('negative');
+        $this->expectExceptionMessage('R component is negative');
 
         // SEQUENCE(len=6) containing INTEGER(val=0xFF = -1) + INTEGER(val=0x01)
         EcdsaSignatureConverter::derToRaw("\x30\x06\x02\x01\xFF\x02\x01\x01", 256);
@@ -517,6 +517,48 @@ final class EcdsaSignatureConverterTest extends TestCase
     }
 
     #[Test]
+    #[TestDox('derToRaw: throws for non-minimal multi-byte DER length encoding (2-byte form for value that fits in 1-byte form)')]
+    public function der_to_raw_throws_for_non_minimal_multi_byte_length(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('more octets than necessary');
+
+        // Second INTEGER uses 2-byte long-form length 0x82 0x00 0x80 (value=128),
+        // which fits in 1-byte long-form 0x81 0x80. This triggers the multi-byte
+        // non-minimal check ($nBytes > 1 && $len < (1 << (8 * ($nBytes - 1)))).
+        $secondIntValue = str_repeat("\x00", 128);
+        $secondInt = "\x02\x82\x00\x80".$secondIntValue;
+        $firstInt = "\x02\x01\x01";
+        $body = $firstInt.$secondInt;
+        // SEQUENCE body = 135 bytes, needs long-form: 0x30 0x81 0x87
+        $der = "\x30\x81\x87".$body;
+
+        EcdsaSignatureConverter::derToRaw($der, 256);
+    }
+
+    #[Test]
+    #[TestDox('derToRaw: throws for negative DER INTEGER S component (R is valid)')]
+    public function der_to_raw_throws_for_negative_s_integer(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('S component is negative');
+
+        // SEQUENCE(len=6) containing INTEGER(val=0x01) + INTEGER(val=0xFF = -1)
+        EcdsaSignatureConverter::derToRaw("\x30\x06\x02\x01\x01\x02\x01\xFF", 256);
+    }
+
+    #[Test]
+    #[TestDox('derToRaw: throws when DER INTEGER S has zero length (R is valid)')]
+    public function der_to_raw_throws_for_zero_length_s_integer(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Failed to extract R and S');
+
+        // SEQUENCE(len=8), INTEGER(len=4, val=0x00 0x00 0x00 0x01) + INTEGER(len=0)
+        EcdsaSignatureConverter::derToRaw("\x30\x08\x02\x04\x00\x00\x00\x01\x02\x00", 256);
+    }
+
+    #[Test]
     #[TestDox('derToRaw: throws when DER length field exceeds 4 bytes')]
     public function der_to_raw_throws_for_excessive_length_bytes(): void
     {
@@ -532,7 +574,7 @@ final class EcdsaSignatureConverterTest extends TestCase
     public function der_to_raw_throws_for_offset_exceeds_data(): void
     {
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('read offset');
+        $this->expectExceptionMessage('out of bounds');
 
         // SEQUENCE(len=6) containing only one INTEGER(len=4) that consumes all SEQUENCE content
         EcdsaSignatureConverter::derToRaw("\x30\x06\x02\x04\x00\x00\x00\x01", 256);
@@ -543,7 +585,7 @@ final class EcdsaSignatureConverterTest extends TestCase
     public function der_to_raw_throws_for_oversized_s_integer(): void
     {
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('exceeds');
+        $this->expectExceptionMessage('S value (33 bytes) exceeds');
 
         // SEQUENCE containing normal R (1 byte) + oversized S (33 non-zero bytes, exceeds 32-byte ES256 component)
         $rValue = "\x01";

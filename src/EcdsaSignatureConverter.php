@@ -12,16 +12,16 @@ use InvalidArgumentException;
  * OpenSSL and Cloud KMS return DER-encoded ECDSA signatures, but JWT/JWS (RFC 7518 Section 3.4)
  * requires raw concatenated (R || S) format with fixed-length components.
  *
- * Supported key sizes:
- *   - 256 bits (ES256 / P-256)  → 64-byte raw signature
- *   - 384 bits (ES384 / P-384)  → 96-byte raw signature
- *   - 512 bits (ES512 / P-521)  → 132-byte raw signature
+ * Supported JOSE key-size identifiers:
+ *   - 256 (ES256 / P-256)  → 64-byte raw signature
+ *   - 384 (ES384 / P-384)  → 96-byte raw signature
+ *   - 512 (ES512 / P-521)  → 132-byte raw signature (P-521 is a 521-bit curve; JOSE names it "ES512")
  *
  * @see https://www.rfc-editor.org/rfc/rfc7518#section-3.4
  */
 final readonly class EcdsaSignatureConverter
 {
-    /** @var array<int, int> Map of key size in bits to component byte length */
+    /** @var array<int, int> Map of JOSE key-size identifier (in bits) to component byte length */
     private const COMPONENT_LENGTHS = [
         256 => 32,  // P-256: 256 / 8
         384 => 48,  // P-384: 384 / 8
@@ -72,24 +72,41 @@ final readonly class EcdsaSignatureConverter
             throw new InvalidArgumentException('DER SEQUENCE content length does not match its declared length.');
         }
 
+        // Defensive: $r/$s should always be strings after the INTEGER tag check above,
+        // but guard against readDer returning null for safety. The $r === '' / $s === ''
+        // checks catch zero-length INTEGERs.
         if (! is_string($r) || $r === '' || ! is_string($s) || $s === '') {
             throw new InvalidArgumentException('Failed to extract R and S components from DER signature.');
         }
 
-        // DER INTEGERs are signed two's complement. If the high bit of the first byte
-        // is set without a leading 0x00, the value is negative — invalid for ECDSA R/S.
-        if ((ord($r[0]) & 0x80) !== 0 || (ord($s[0]) & 0x80) !== 0) {
-            throw new InvalidArgumentException('DER INTEGER R or S component is negative, which is invalid for ECDSA signatures.');
+        // DER INTEGERs are signed two's complement. A set high bit on the first byte
+        // means the value is negative — invalid for ECDSA R/S values, which must be positive.
+        if ((ord($r[0]) & 0x80) !== 0) {
+            throw new InvalidArgumentException('DER INTEGER R component is negative, which is invalid for ECDSA signatures.');
+        }
+        if ((ord($s[0]) & 0x80) !== 0) {
+            throw new InvalidArgumentException('DER INTEGER S component is negative, which is invalid for ECDSA signatures.');
         }
 
-        // Strip DER sign-padding: DER INTEGERs prepend 0x00 when the high bit is set
-        // to keep the value positive. JWS raw format uses unsigned big-endian integers.
+        // Strip leading zeros: DER INTEGERs may have a 0x00 sign-padding prefix,
+        // and JWS raw format requires minimal unsigned big-endian representation
+        // before fixed-length padding. We intentionally tolerate non-minimal INTEGER
+        // encoding (extra leading 0x00 bytes beyond the sign pad) for interoperability
+        // with non-conformant encoders, even though strict DER (X.690 Section 8.3.2)
+        // would reject them.
         $r = ltrim($r, "\x00");
         $s = ltrim($s, "\x00");
 
-        if (strlen($r) > $componentLength || strlen($s) > $componentLength) {
+        if (strlen($r) > $componentLength) {
+            $rLen = strlen($r);
             throw new InvalidArgumentException(
-                "DER INTEGER value exceeds {$componentLength} bytes for {$keySizeBits}-bit key.",
+                "DER INTEGER R value ({$rLen} bytes) exceeds {$componentLength}-byte limit for {$keySizeBits}-bit key.",
+            );
+        }
+        if (strlen($s) > $componentLength) {
+            $sLen = strlen($s);
+            throw new InvalidArgumentException(
+                "DER INTEGER S value ({$sLen} bytes) exceeds {$componentLength}-byte limit for {$keySizeBits}-bit key.",
             );
         }
 
@@ -189,7 +206,8 @@ final readonly class EcdsaSignatureConverter
      * For constructed types (SEQUENCE), returns null as data — the caller
      * should continue reading child elements from the returned offset.
      * For primitive types (INTEGER), returns the raw value bytes.
-     * For BIT STRING, skips the unused-bits octet (included for generality; not used by ECDSA signature methods).
+     * For BIT STRING, skips the unused-bits octet. (This branch is currently unreachable
+     * for ECDSA signatures, which only contain SEQUENCE and INTEGER types.)
      *
      * @return array{int, string|null, int, int} New offset, decoded value, raw tag byte, and content-end position
      *
@@ -199,13 +217,15 @@ final readonly class EcdsaSignatureConverter
     {
         $size = strlen($der);
 
-        if ($offset >= $size) {
-            throw new InvalidArgumentException("DER read offset {$offset} exceeds data length {$size}.");
+        if ($offset < 0 || $offset >= $size) {
+            throw new InvalidArgumentException("DER read offset {$offset} is out of bounds for data length {$size}.");
         }
 
         $pos = $offset;
 
-        // Constructed/primitive bit (bit 6 in X.690 / bit 5 zero-indexed) of ASN.1 tag byte
+        // Constructed/primitive bit (bit 6 in X.690 / bit 5 zero-indexed) of ASN.1 tag byte.
+        // Note: ($tagByte >> 5) & 0x01 assumes Universal class (class bits = 00);
+        // for other classes, use ($tagByte & 0x20) instead.
         $tagByte = ord($der[$pos]);
         $constructed = ($tagByte >> 5) & 0x01;
         $type = $tagByte & 0x1F;
@@ -262,19 +282,19 @@ final readonly class EcdsaSignatureConverter
         $contentEnd = $pos + $len;
 
         // Value
-        if ($type === 0x03) {
-            // BIT STRING: skip padding indicator octet
+        if ($constructed) {
+            $data = null;
+        } elseif ($type === 0x03) {
+            // BIT STRING: skip unused-bits octet (X.690 Section 8.6.2)
             if ($len < 1) {
                 throw new InvalidArgumentException('DER BIT STRING has invalid length.');
             }
             $pos++;
             $data = substr($der, $pos, $len - 1);
             $pos += $len - 1;
-        } elseif (! $constructed) {
+        } else {
             $data = substr($der, $pos, $len);
             $pos += $len;
-        } else {
-            $data = null;
         }
 
         return [$pos, $data, $tagByte, $contentEnd];
