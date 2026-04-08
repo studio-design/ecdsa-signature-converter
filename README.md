@@ -94,7 +94,7 @@ Converts a DER-encoded ECDSA signature to JWS raw (R||S) format.
 
 Converts a JWS raw (R||S) ECDSA signature to ASN.1 DER format.
 
-- **`$raw`** — Raw signature: R || S (total length must equal keySizeBits / 8 * 2)
+- **`$raw`** — Raw signature: R || S (64 bytes for ES256, 96 for ES384, 132 for ES512)
 - **`$keySizeBits`** — ECDSA key size in bits (256, 384, or 512)
 - **Returns** — DER-encoded ASN.1 SEQUENCE containing two INTEGERs (r, s)
 - **Throws** `InvalidArgumentException` if the raw signature length is invalid or the key size is unsupported
