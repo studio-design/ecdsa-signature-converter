@@ -72,10 +72,11 @@ final readonly class EcdsaSignatureConverter
             throw new InvalidArgumentException('DER SEQUENCE content length does not match its declared length.');
         }
 
-        // Defensive: $r/$s should always be strings after the INTEGER tag check above,
-        // but guard against readDer returning null for safety. The $r === '' / $s === ''
-        // checks catch zero-length INTEGERs.
-        if (! is_string($r) || $r === '' || ! is_string($s) || $s === '') {
+        // After the INTEGER tag check above, $r and $s are guaranteed to be strings
+        // (readDer returns null only for constructed types, and INTEGER is primitive).
+        // Zero-length INTEGERs are now rejected inside readDer itself (X.690 Section 8.3.1),
+        // but we keep this guard as defense-in-depth.
+        if ($r === '' || $s === '') {
             throw new InvalidArgumentException('Failed to extract R and S components from DER signature.');
         }
 
@@ -206,8 +207,6 @@ final readonly class EcdsaSignatureConverter
      * For constructed types (SEQUENCE), returns null as data — the caller
      * should continue reading child elements from the returned offset.
      * For primitive types (INTEGER), returns the raw value bytes.
-     * For BIT STRING, skips the unused-bits octet. (This branch is currently unreachable
-     * for ECDSA signatures, which only contain SEQUENCE and INTEGER types.)
      *
      * @return array{int, string|null, int, int} New offset, decoded value, raw tag byte, and content-end position
      *
@@ -223,11 +222,19 @@ final readonly class EcdsaSignatureConverter
 
         $pos = $offset;
 
-        // Constructed/primitive bit (bit 6 in X.690 / bit 5 zero-indexed) of ASN.1 tag byte.
-        // Note: ($tagByte >> 5) & 0x01 assumes Universal class (class bits = 00);
-        // for other classes, use ($tagByte & 0x20) instead.
+        // Constructed/primitive bit (bit 5, zero-indexed) of ASN.1 tag byte (X.690 Section 8.1.2.2).
+        // Using bitmask 0x20 to extract bit 5 directly, which works for all tag classes.
         $tagByte = ord($der[$pos]);
-        $constructed = ($tagByte >> 5) & 0x01;
+
+        // Reject non-Universal class tags (X.690 Section 8.1.2.2: class bits are bits 7-6).
+        // ECDSA signatures only use Universal class types (SEQUENCE 0x30, INTEGER 0x02).
+        if (($tagByte & 0xC0) !== 0x00) {
+            throw new InvalidArgumentException(
+                sprintf('DER non-Universal class tag (0x%02X) is not supported for ECDSA signatures.', $tagByte),
+            );
+        }
+
+        $constructed = ($tagByte & 0x20) ? 1 : 0;
         $type = $tagByte & 0x1F;
         $pos++;
 
@@ -265,6 +272,11 @@ final readonly class EcdsaSignatureConverter
                 throw new InvalidArgumentException('DER data truncated: multi-byte length field is incomplete.');
             }
 
+            // Guard against integer overflow on 32-bit PHP where $len could wrap
+            if ($len < 0) {
+                throw new InvalidArgumentException('DER length field overflowed integer range.');
+            }
+
             // DER requires shortest possible length encoding
             if ($len < 0x80) {
                 throw new InvalidArgumentException('DER non-minimal length encoding: value fits in short form.');
@@ -281,18 +293,14 @@ final readonly class EcdsaSignatureConverter
         // Content-end position: for all types, this is the byte after the last content byte
         $contentEnd = $pos + $len;
 
-        // Value
+        // Value: ECDSA signatures contain only SEQUENCE (constructed) and INTEGER (primitive).
         if ($constructed) {
             $data = null;
-        } elseif ($type === 0x03) {
-            // BIT STRING: skip unused-bits octet (X.690 Section 8.6.2)
-            if ($len < 1) {
-                throw new InvalidArgumentException('DER BIT STRING has invalid length.');
-            }
-            $pos++;
-            $data = substr($der, $pos, $len - 1);
-            $pos += $len - 1;
         } else {
+            // X.690 Section 8.3.1: INTEGER contents must be at least one octet
+            if ($type === 0x02 && $len === 0) {
+                throw new InvalidArgumentException('DER INTEGER must have at least one content octet (X.690 Section 8.3.1).');
+            }
             $data = substr($der, $pos, $len);
             $pos += $len;
         }

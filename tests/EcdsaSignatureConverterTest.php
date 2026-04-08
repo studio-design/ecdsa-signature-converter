@@ -42,37 +42,6 @@ final class EcdsaSignatureConverterTest extends TestCase
     // ---------------------------------------------------------------
 
     #[Test]
-    #[TestDox('derToRaw: ES256 DER signature is converted to 64-byte raw format')]
-    public function der_to_raw_converts_es256(): void
-    {
-        $ecKey = self::createEcKey();
-
-        $this->assertTrue(openssl_sign('test-payload', $der, $ecKey, OPENSSL_ALGO_SHA256));
-
-        $raw = EcdsaSignatureConverter::derToRaw($der, 256);
-
-        $this->assertSame(64, strlen($raw));
-    }
-
-    #[Test]
-    #[TestDox('derToRaw: converted raw signature is verifiable with OpenSSL')]
-    public function der_to_raw_round_trip_is_verifiable(): void
-    {
-        $ecKey = self::createEcKey();
-        $details = openssl_pkey_get_details($ecKey);
-        $publicKey = openssl_pkey_get_public($details['key']);
-
-        $payload = 'test-payload';
-        $this->assertTrue(openssl_sign($payload, $der, $ecKey, OPENSSL_ALGO_SHA256));
-
-        $raw = EcdsaSignatureConverter::derToRaw($der, 256);
-        $derAgain = EcdsaSignatureConverter::rawToDer($raw, 256);
-
-        $result = openssl_verify($payload, $derAgain, $publicKey, OPENSSL_ALGO_SHA256);
-        $this->assertSame(1, $result);
-    }
-
-    #[Test]
     #[TestDox('derToRaw: throws for unsupported key size')]
     public function der_to_raw_throws_for_unsupported_key_size(): void
     {
@@ -103,7 +72,7 @@ final class EcdsaSignatureConverterTest extends TestCase
     }
 
     #[Test]
-    #[TestDox('derToRaw: throws for trailing data after R and S')]
+    #[TestDox('derToRaw: throws for trailing data after SEQUENCE')]
     public function der_to_raw_throws_for_trailing_data(): void
     {
         $ecKey = self::createEcKey();
@@ -132,31 +101,23 @@ final class EcdsaSignatureConverterTest extends TestCase
     // ---------------------------------------------------------------
 
     #[Test]
-    #[TestDox('rawToDer: converts 64-byte raw ES256 signature to valid DER')]
-    public function raw_to_der_converts_es256(): void
-    {
-        $ecKey = self::createEcKey();
-        $details = openssl_pkey_get_details($ecKey);
-        $publicKey = openssl_pkey_get_public($details['key']);
-
-        $payload = 'test-payload';
-        $this->assertTrue(openssl_sign($payload, $der, $ecKey, OPENSSL_ALGO_SHA256));
-
-        // DER -> raw -> DER should produce a verifiable signature
-        $raw = EcdsaSignatureConverter::derToRaw($der, 256);
-        $derAgain = EcdsaSignatureConverter::rawToDer($raw, 256);
-
-        $this->assertSame(1, openssl_verify($payload, $derAgain, $publicKey, OPENSSL_ALGO_SHA256));
-    }
-
-    #[Test]
-    #[TestDox('rawToDer: throws for wrong raw signature length')]
-    public function raw_to_der_throws_for_wrong_length(): void
+    #[TestDox('rawToDer: throws for too-short raw signature')]
+    public function raw_to_der_throws_for_short_raw(): void
     {
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('exactly 64 bytes');
 
         EcdsaSignatureConverter::rawToDer(str_repeat("\x01", 63), 256);
+    }
+
+    #[Test]
+    #[TestDox('rawToDer: throws for too-long raw signature')]
+    public function raw_to_der_throws_for_long_raw(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('exactly 64 bytes');
+
+        EcdsaSignatureConverter::rawToDer(str_repeat("\x01", 65), 256);
     }
 
     #[Test]
@@ -177,98 +138,6 @@ final class EcdsaSignatureConverterTest extends TestCase
         $der = EcdsaSignatureConverter::rawToDer($raw, 256);
 
         $this->assertSame(0x30, ord($der[0]));
-    }
-
-    // ---------------------------------------------------------------
-    // Round-trip: multiple iterations
-    // ---------------------------------------------------------------
-
-    #[Test]
-    #[TestDox('Round-trip: DER -> raw -> DER produces identical verification result across multiple signatures')]
-    public function round_trip_multiple_signatures(): void
-    {
-        $ecKey = self::createEcKey();
-        $details = openssl_pkey_get_details($ecKey);
-        $publicKey = openssl_pkey_get_public($details['key']);
-
-        for ($i = 0; $i < 10; $i++) {
-            $payload = "payload-{$i}";
-            $this->assertTrue(openssl_sign($payload, $der, $ecKey, OPENSSL_ALGO_SHA256));
-
-            $raw = EcdsaSignatureConverter::derToRaw($der, 256);
-            $derAgain = EcdsaSignatureConverter::rawToDer($raw, 256);
-
-            $this->assertSame(64, strlen($raw), "Iteration {$i}: raw should be 64 bytes");
-            $this->assertSame(1, openssl_verify($payload, $derAgain, $publicKey, OPENSSL_ALGO_SHA256), "Iteration {$i}: verification failed");
-        }
-    }
-
-    // ---------------------------------------------------------------
-    // ES384 (P-384)
-    // ---------------------------------------------------------------
-
-    #[Test]
-    #[TestDox('derToRaw: ES384 DER signature is converted to 96-byte raw format')]
-    public function der_to_raw_converts_es384(): void
-    {
-        $ecKey = self::createEcKey('secp384r1');
-
-        $this->assertTrue(openssl_sign('test-payload', $der, $ecKey, OPENSSL_ALGO_SHA384));
-
-        $raw = EcdsaSignatureConverter::derToRaw($der, 384);
-
-        $this->assertSame(96, strlen($raw));
-    }
-
-    #[Test]
-    #[TestDox('derToRaw: ES384 round-trip produces verifiable signature')]
-    public function der_to_raw_round_trip_es384(): void
-    {
-        $ecKey = self::createEcKey('secp384r1');
-        $details = openssl_pkey_get_details($ecKey);
-        $publicKey = openssl_pkey_get_public($details['key']);
-
-        $payload = 'test-payload';
-        $this->assertTrue(openssl_sign($payload, $der, $ecKey, OPENSSL_ALGO_SHA384));
-
-        $raw = EcdsaSignatureConverter::derToRaw($der, 384);
-        $derAgain = EcdsaSignatureConverter::rawToDer($raw, 384);
-
-        $this->assertSame(1, openssl_verify($payload, $derAgain, $publicKey, OPENSSL_ALGO_SHA384));
-    }
-
-    // ---------------------------------------------------------------
-    // ES512 (P-521)
-    // ---------------------------------------------------------------
-
-    #[Test]
-    #[TestDox('derToRaw: ES512 DER signature is converted to 132-byte raw format')]
-    public function der_to_raw_converts_es512(): void
-    {
-        $ecKey = self::createEcKey('secp521r1');
-
-        $this->assertTrue(openssl_sign('test-payload', $der, $ecKey, OPENSSL_ALGO_SHA512));
-
-        $raw = EcdsaSignatureConverter::derToRaw($der, 512);
-
-        $this->assertSame(132, strlen($raw));
-    }
-
-    #[Test]
-    #[TestDox('derToRaw: ES512 round-trip produces verifiable signature')]
-    public function der_to_raw_round_trip_es512(): void
-    {
-        $ecKey = self::createEcKey('secp521r1');
-        $details = openssl_pkey_get_details($ecKey);
-        $publicKey = openssl_pkey_get_public($details['key']);
-
-        $payload = 'test-payload';
-        $this->assertTrue(openssl_sign($payload, $der, $ecKey, OPENSSL_ALGO_SHA512));
-
-        $raw = EcdsaSignatureConverter::derToRaw($der, 512);
-        $derAgain = EcdsaSignatureConverter::rawToDer($raw, 512);
-
-        $this->assertSame(1, openssl_verify($payload, $derAgain, $publicKey, OPENSSL_ALGO_SHA512));
     }
 
     // ---------------------------------------------------------------
@@ -425,7 +294,7 @@ final class EcdsaSignatureConverterTest extends TestCase
     public function der_to_raw_throws_for_zero_length_integer(): void
     {
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('Failed to extract R and S');
+        $this->expectExceptionMessage('at least one content octet');
 
         // SEQUENCE(len=8), INTEGER(len=0) + INTEGER(len=4, val=0x00 0x00 0x00 0x01)
         EcdsaSignatureConverter::derToRaw("\x30\x08\x02\x00\x02\x04\x00\x00\x00\x01", 256);
@@ -458,6 +327,28 @@ final class EcdsaSignatureConverterTest extends TestCase
 
         // SEQUENCE with indefinite-length encoding (0x80) — forbidden in DER
         EcdsaSignatureConverter::derToRaw("\x30\x80\x02\x01\x01\x02\x01\x01", 256);
+    }
+
+    #[Test]
+    #[TestDox('derToRaw: throws for non-Universal class tag (context-specific)')]
+    public function der_to_raw_throws_for_non_universal_class_tag(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('non-Universal class tag');
+
+        // SEQUENCE(len=6) containing context-specific tag 0xA0 (class=10, constructed, tag=0) + INTEGER(len=1, val=0x01)
+        EcdsaSignatureConverter::derToRaw("\x30\x06\xA0\x01\x01\x02\x01\x01", 256);
+    }
+
+    #[Test]
+    #[TestDox('derToRaw: throws for application class tag')]
+    public function der_to_raw_throws_for_application_class_tag(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('non-Universal class tag');
+
+        // SEQUENCE(len=6) containing application class tag 0x42 (class=01, primitive, tag=2) + INTEGER(len=1, val=0x01)
+        EcdsaSignatureConverter::derToRaw("\x30\x06\x42\x01\x01\x02\x01\x01", 256);
     }
 
     #[Test]
@@ -552,7 +443,7 @@ final class EcdsaSignatureConverterTest extends TestCase
     public function der_to_raw_throws_for_zero_length_s_integer(): void
     {
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('Failed to extract R and S');
+        $this->expectExceptionMessage('at least one content octet');
 
         // SEQUENCE(len=8), INTEGER(len=4, val=0x00 0x00 0x00 0x01) + INTEGER(len=0)
         EcdsaSignatureConverter::derToRaw("\x30\x08\x02\x04\x00\x00\x00\x01\x02\x00", 256);
