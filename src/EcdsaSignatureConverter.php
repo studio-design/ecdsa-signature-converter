@@ -72,44 +72,19 @@ final readonly class EcdsaSignatureConverter
             throw new InvalidArgumentException('DER SEQUENCE content length does not match its declared length.');
         }
 
-        // After the INTEGER tag check above, $r and $s are guaranteed to be strings
-        // (readDer returns null only for constructed types, and INTEGER is primitive).
-        // Zero-length INTEGERs are now rejected inside readDer itself (X.690 Section 8.3.1),
-        // but we keep this guard as defense-in-depth.
+        // Defense-in-depth: readDer already rejects zero-length INTEGERs (X.690 Section 8.3.1).
+        // @codeCoverageIgnoreStart
         if ($r === '' || $s === '') {
             throw new InvalidArgumentException('Failed to extract R and S components from DER signature.');
         }
+        // @codeCoverageIgnoreEnd
 
-        // DER INTEGERs are signed two's complement. A set high bit on the first byte
-        // means the value is negative — invalid for ECDSA R/S values, which must be positive.
-        if ((ord($r[0]) & 0x80) !== 0) {
-            throw new InvalidArgumentException('DER INTEGER R component is negative, which is invalid for ECDSA signatures.');
-        }
-        if ((ord($s[0]) & 0x80) !== 0) {
-            throw new InvalidArgumentException('DER INTEGER S component is negative, which is invalid for ECDSA signatures.');
-        }
-
-        // Strip leading zeros: DER INTEGERs may have a 0x00 sign-padding prefix,
-        // and JWS raw format requires minimal unsigned big-endian representation
-        // before fixed-length padding. We intentionally tolerate non-minimal INTEGER
-        // encoding (extra leading 0x00 bytes beyond the sign pad) for interoperability
-        // with non-conformant encoders, even though strict DER (X.690 Section 8.3.2)
-        // would reject them.
-        $r = ltrim($r, "\x00");
-        $s = ltrim($s, "\x00");
-
-        if (strlen($r) > $componentLength) {
-            $rLen = strlen($r);
-            throw new InvalidArgumentException(
-                "DER INTEGER R value ({$rLen} bytes) exceeds {$componentLength}-byte limit for {$keySizeBits}-bit key.",
-            );
-        }
-        if (strlen($s) > $componentLength) {
-            $sLen = strlen($s);
-            throw new InvalidArgumentException(
-                "DER INTEGER S value ({$sLen} bytes) exceeds {$componentLength}-byte limit for {$keySizeBits}-bit key.",
-            );
-        }
+        // Validate and strip leading zeros from R and S components.
+        // We intentionally tolerate non-minimal INTEGER encoding (extra leading 0x00 bytes
+        // beyond the sign pad) for interoperability with non-conformant encoders, even though
+        // strict DER (X.690 Section 8.3.2) would reject them.
+        $r = self::validateAndStripComponent($r, 'R', $componentLength, $keySizeBits);
+        $s = self::validateAndStripComponent($s, 'S', $componentLength, $keySizeBits);
 
         // Pad to fixed length for JWS format
         $r = str_pad($r, $componentLength, "\x00", STR_PAD_LEFT);
@@ -160,6 +135,36 @@ final readonly class EcdsaSignatureConverter
                 "Unsupported key size: {$keySizeBits}. Supported sizes: ".implode(', ', array_keys(self::COMPONENT_LENGTHS)).'.',
             );
         }
+    }
+
+    /**
+     * Validate a DER INTEGER component and strip leading zeros for JWS format.
+     *
+     * DER INTEGERs are signed two's complement — a set high bit means the value is
+     * negative, which is invalid for ECDSA R/S values that must be positive.
+     * After rejecting negatives, leading zeros are stripped to produce a minimal
+     * unsigned big-endian value for fixed-length JWS padding.
+     *
+     * @return string Stripped component value
+     *
+     * @throws InvalidArgumentException
+     */
+    private static function validateAndStripComponent(string $value, string $label, int $componentLength, int $keySizeBits): string
+    {
+        if ((ord($value[0]) & 0x80) !== 0) {
+            throw new InvalidArgumentException("DER INTEGER {$label} component is negative, which is invalid for ECDSA signatures.");
+        }
+
+        $value = ltrim($value, "\x00");
+
+        if (strlen($value) > $componentLength) {
+            $len = strlen($value);
+            throw new InvalidArgumentException(
+                "DER INTEGER {$label} value ({$len} bytes) exceeds {$componentLength}-byte limit for {$keySizeBits}-bit key.",
+            );
+        }
+
+        return $value;
     }
 
     /**
@@ -222,8 +227,8 @@ final readonly class EcdsaSignatureConverter
 
         $pos = $offset;
 
-        // Constructed/primitive bit (bit 5, zero-indexed) of ASN.1 tag byte (X.690 Section 8.1.2.2).
-        // Using bitmask 0x20 to extract bit 5 directly, which works for all tag classes.
+        // ASN.1 tag byte (X.690 Section 8.1.2.2):
+        //   bits 7-6 = class (0x00 = Universal), bit 5 = constructed (0x20), bits 4-0 = tag number
         $tagByte = ord($der[$pos]);
 
         // Reject non-Universal class tags (X.690 Section 8.1.2.2: class bits are bits 7-6).
@@ -234,7 +239,7 @@ final readonly class EcdsaSignatureConverter
             );
         }
 
-        $constructed = ($tagByte & 0x20) ? 1 : 0;
+        $constructed = ($tagByte & 0x20) !== 0;
         $type = $tagByte & 0x1F;
         $pos++;
 
@@ -263,19 +268,21 @@ final readonly class EcdsaSignatureConverter
             $nBytes = $n;
             $len = 0;
 
-            while ($n-- && $pos < $size) {
+            for ($i = 0; $i < $nBytes && $pos < $size; $i++) {
                 $len = ($len << 8) | ord($der[$pos++]);
             }
 
-            // Verify all length bytes were consumed (post-decrement leaves $n at -1 on normal exit)
-            if ($n >= 0) {
+            if ($i < $nBytes) {
                 throw new InvalidArgumentException('DER data truncated: multi-byte length field is incomplete.');
             }
 
             // Guard against integer overflow on 32-bit PHP where $len could wrap
+            // (untestable on 64-bit platforms where 4-byte shifts cannot produce negative values)
+            // @codeCoverageIgnoreStart
             if ($len < 0) {
                 throw new InvalidArgumentException('DER length field overflowed integer range.');
             }
+            // @codeCoverageIgnoreEnd
 
             // DER requires shortest possible length encoding
             if ($len < 0x80) {

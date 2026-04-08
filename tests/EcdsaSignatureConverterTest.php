@@ -19,7 +19,7 @@ final class EcdsaSignatureConverterTest extends TestCase
      */
     private static function createEcKey(string $curve = 'prime256v1'): OpenSSLAsymmetricKey
     {
-        // PHP 8.4 changed the openssl_pkey_new() config format for EC keys
+        // PHP 8.4+ requires EC curve config inside a nested 'ec' key; older versions use a flat 'curve_name' key
         $key = openssl_pkey_new([
             'ec'               => ['curve_name' => $curve],
             'private_key_type' => OPENSSL_KEYTYPE_EC,
@@ -33,10 +33,14 @@ final class EcdsaSignatureConverterTest extends TestCase
             ]);
         }
 
-        assert($key instanceof OpenSSLAsymmetricKey);
+        if (! $key instanceof OpenSSLAsymmetricKey) {
+            $error = openssl_error_string() ?: 'unknown error';
+            self::fail("Failed to create EC key for curve '{$curve}': {$error}");
+        }
 
         return $key;
     }
+
     // ---------------------------------------------------------------
     // derToRaw
     // ---------------------------------------------------------------
@@ -92,7 +96,7 @@ final class EcdsaSignatureConverterTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('multi-byte length field is incomplete');
 
-        // SEQUENCE(len=6) -> INTEGER(len=1, val=0x01) + INTEGER with 3-byte long-form length but only 2 bytes remain
+        // SEQUENCE(len=6) -> INTEGER(len=1, val=0x01) + INTEGER with 3-byte long-form length but only 1 byte remains
         EcdsaSignatureConverter::derToRaw("\x30\x06\x02\x01\x01\x02\x83\x00", 256);
     }
 
@@ -336,7 +340,7 @@ final class EcdsaSignatureConverterTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('non-Universal class tag');
 
-        // SEQUENCE(len=6) containing context-specific tag 0xA0 (class=10, constructed, tag=0) + INTEGER(len=1, val=0x01)
+        // SEQUENCE(len=6) containing context-specific tag 0xA0 (class=context-specific, constructed, tag=0) + INTEGER(len=1, val=0x01)
         EcdsaSignatureConverter::derToRaw("\x30\x06\xA0\x01\x01\x02\x01\x01", 256);
     }
 
@@ -347,7 +351,7 @@ final class EcdsaSignatureConverterTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('non-Universal class tag');
 
-        // SEQUENCE(len=6) containing application class tag 0x42 (class=01, primitive, tag=2) + INTEGER(len=1, val=0x01)
+        // SEQUENCE(len=6) containing application class tag 0x42 (class=application, primitive, tag=2) + INTEGER(len=1, val=0x01)
         EcdsaSignatureConverter::derToRaw("\x30\x06\x42\x01\x01\x02\x01\x01", 256);
     }
 
@@ -529,7 +533,9 @@ final class EcdsaSignatureConverterTest extends TestCase
     {
         $ecKey = self::createEcKey($curve);
         $details = openssl_pkey_get_details($ecKey);
+        $this->assertIsArray($details, 'Failed to get key details');
         $publicKey = openssl_pkey_get_public($details['key']);
+        $this->assertNotFalse($publicKey, 'Failed to extract public key');
 
         for ($i = 0; $i < 5; $i++) {
             $payload = "payload-{$keySize}-{$i}";
