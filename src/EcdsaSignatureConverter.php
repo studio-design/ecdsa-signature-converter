@@ -21,7 +21,12 @@ use InvalidArgumentException;
  */
 final readonly class EcdsaSignatureConverter
 {
-    private const SUPPORTED_KEY_SIZES = [256, 384, 512];
+    /** @var array<int, int> Map of key size in bits to component byte length */
+    private const COMPONENT_LENGTHS = [
+        256 => 32,  // P-256: 256 / 8
+        384 => 48,  // P-384: 384 / 8
+        512 => 66,  // P-521: ceil(521 / 8)
+    ];
 
     /**
      * Convert a DER-encoded ECDSA signature to JWS raw (R||S) format.
@@ -45,12 +50,16 @@ final readonly class EcdsaSignatureConverter
             throw new InvalidArgumentException('DER signature does not start with SEQUENCE tag (0x30).');
         }
 
-        $componentLength = $keySizeBits / 8;
+        $componentLength = self::COMPONENT_LENGTHS[$keySizeBits];
 
         // Parse DER: SEQUENCE { INTEGER r, INTEGER s }
         [$offset] = self::readDer($der);
-        [$offset, $r] = self::readDer($der, $offset);
-        [$endPos, $s] = self::readDer($der, $offset);
+        [$offset, $r, $rTag] = self::readDer($der, $offset);
+        [$endPos, $s, $sTag] = self::readDer($der, $offset);
+
+        if ($rTag !== 0x02 || $sTag !== 0x02) {
+            throw new InvalidArgumentException('DER signature R and S components must be INTEGERs (tag 0x02).');
+        }
 
         if ($endPos !== strlen($der)) {
             throw new InvalidArgumentException('DER signature contains trailing data after R and S components.');
@@ -86,7 +95,7 @@ final readonly class EcdsaSignatureConverter
     {
         self::validateKeySize($keySizeBits);
 
-        $componentLength = $keySizeBits / 8;
+        $componentLength = self::COMPONENT_LENGTHS[$keySizeBits];
         $expectedLength = $componentLength * 2;
 
         if (strlen($raw) !== $expectedLength) {
@@ -109,9 +118,9 @@ final readonly class EcdsaSignatureConverter
      */
     private static function validateKeySize(int $keySizeBits): void
     {
-        if (! in_array($keySizeBits, self::SUPPORTED_KEY_SIZES, true)) {
+        if (! array_key_exists($keySizeBits, self::COMPONENT_LENGTHS)) {
             throw new InvalidArgumentException(
-                "Unsupported key size: {$keySizeBits}. Supported sizes: ".implode(', ', self::SUPPORTED_KEY_SIZES).'.',
+                "Unsupported key size: {$keySizeBits}. Supported sizes: ".implode(', ', array_keys(self::COMPONENT_LENGTHS)).'.',
             );
         }
     }
@@ -163,7 +172,7 @@ final readonly class EcdsaSignatureConverter
      * For primitive types (INTEGER), returns the raw value bytes.
      * For BIT STRING, skips the unused-bits octet.
      *
-     * @return array{int, string|null} New offset and decoded value
+     * @return array{int, string|null, int} New offset, decoded value, and raw tag byte
      *
      * @throws InvalidArgumentException
      */
@@ -178,8 +187,10 @@ final readonly class EcdsaSignatureConverter
         $pos = $offset;
 
         // Bit 5 of ASN.1 tag byte: 0 = primitive, 1 = constructed (SEQUENCE, SET, etc.)
-        $constructed = (ord($der[$pos]) >> 5) & 0x01;
-        $type = ord($der[$pos++]) & 0x1F;
+        $tagByte = ord($der[$pos]);
+        $constructed = ($tagByte >> 5) & 0x01;
+        $type = $tagByte & 0x1F;
+        $pos++;
 
         if ($pos >= $size) {
             throw new InvalidArgumentException('DER data truncated: missing length byte.');
@@ -222,6 +233,6 @@ final readonly class EcdsaSignatureConverter
             $data = null;
         }
 
-        return [$pos, $data];
+        return [$pos, $data, $tagByte];
     }
 }
