@@ -1,0 +1,35 @@
+{
+    "name": "studio-design/ecdsa-signature-converter",
+    "description": "Converts ECDSA signatures between ASN.1 DER and JWS raw (R||S) formats. Useful for Cloud KMS/HSM-based JWT signing where OpenSSL/KMS returns DER but JWT (RFC 7518) requires raw format.",
+    "keywords": ["ecdsa", "jwt", "jws", "der", "signature", "kms", "hsm", "rfc7518"],
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Studio Design",
+            "homepage": "https://studio.design"
+        }
+    ],
+    "require": {
+        "php": "^8.2"
+    },
+    "require-dev": {
+        "friendsofphp/php-cs-fixer": "^3.0",
+        "phpstan/phpstan": "^2.0",
+        "phpunit/phpunit": "^11.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "StudioDesign\\EcdsaSignature\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "StudioDesign\\EcdsaSignature\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "stable"
+}
