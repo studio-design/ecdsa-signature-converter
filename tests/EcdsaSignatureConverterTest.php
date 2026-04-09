@@ -282,16 +282,42 @@ final class EcdsaSignatureConverterTest extends TestCase
     }
 
     #[Test]
-    #[TestDox('derToRaw: handles DER with non-minimal integer encoding (extra leading zeros)')]
-    public function der_to_raw_handles_non_minimal_integers(): void
+    #[TestDox('derToRaw: rejects non-minimal INTEGER encoding in R (extra leading zero)')]
+    public function der_to_raw_rejects_non_minimal_r_integer(): void
     {
-        // SEQUENCE { INTEGER(0x00 0x00 0x01), INTEGER(0x00 0x01) } — not strictly valid DER (non-minimal encoding), but tolerated by this parser
-        $der = "\x30\x09\x02\x03\x00\x00\x01\x02\x02\x00\x01";
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('non-minimal encoding');
+
+        // SEQUENCE { INTEGER(0x00 0x00 0x01), INTEGER(0x01) } — non-minimal R: leading 0x00 before byte without high bit set
+        $der = "\x30\x08\x02\x03\x00\x00\x01\x02\x01\x01";
+
+        EcdsaSignatureConverter::derToRaw($der, 256);
+    }
+
+    #[Test]
+    #[TestDox('derToRaw: rejects non-minimal INTEGER encoding in S (extra leading zero)')]
+    public function der_to_raw_rejects_non_minimal_s_integer(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('non-minimal encoding');
+
+        // SEQUENCE { INTEGER(0x01), INTEGER(0x00 0x01) } — non-minimal S: leading 0x00 before byte without high bit set
+        $der = "\x30\x07\x02\x01\x01\x02\x02\x00\x01";
+
+        EcdsaSignatureConverter::derToRaw($der, 256);
+    }
+
+    #[Test]
+    #[TestDox('derToRaw: accepts valid sign-padding (0x00 before byte with high bit set)')]
+    public function der_to_raw_accepts_valid_sign_padding(): void
+    {
+        // SEQUENCE { INTEGER(0x00 0x80), INTEGER(0x01) } — valid: 0x00 is required sign padding before 0x80
+        $der = "\x30\x07\x02\x02\x00\x80\x02\x01\x01";
 
         $raw = EcdsaSignatureConverter::derToRaw($der, 256);
 
         $this->assertSame(64, strlen($raw));
-        $this->assertSame(str_pad("\x01", 32, "\x00", STR_PAD_LEFT), substr($raw, 0, 32));
+        $this->assertSame(str_pad("\x80", 32, "\x00", STR_PAD_LEFT), substr($raw, 0, 32));
         $this->assertSame(str_pad("\x01", 32, "\x00", STR_PAD_LEFT), substr($raw, 32));
     }
 
@@ -312,22 +338,112 @@ final class EcdsaSignatureConverterTest extends TestCase
     }
 
     #[Test]
-    #[TestDox('rawToDer: ES512 all-0xFF triggers long-form DER SEQUENCE length encoding')]
+    #[TestDox('rawToDer: ES512 large values trigger long-form DER SEQUENCE length encoding')]
     public function raw_to_der_es512_long_form_length(): void
     {
         // ES512: 66-byte R + 66-byte S = 132 bytes raw
-        // All 0xFF → each DER INTEGER gets sign-padding (67 bytes) + tag/len (2) = 69 bytes
-        // SEQUENCE body = 138 bytes >= 128 → long-form length encoding
-        $raw = str_repeat("\xFF", 132);
+        // R and S = 0x01 followed by 65 bytes of 0xFF — valid P-521 (first byte ≤ 0x01)
+        // Each DER INTEGER: no sign-padding needed (0x01 high bit not set) → tag(1) + len(1) + value(66) = 68 bytes
+        // SEQUENCE body = 136 bytes >= 128 → long-form length encoding
+        $component = "\x01".str_repeat("\xFF", 65);
+        $raw = $component.$component;
 
         $der = EcdsaSignatureConverter::rawToDer($raw, 512);
 
-        // Verify long-form length: 0x30 0x81 0x8A (SEQUENCE, 1-byte long-form, len=138)
+        // Verify long-form length: 0x30 0x81 0x88 (SEQUENCE, 1-byte long-form, len=136)
         $this->assertSame(0x30, ord($der[0]));
         $this->assertSame(0x81, ord($der[1]));
-        $this->assertSame(138, ord($der[2]));
+        $this->assertSame(136, ord($der[2]));
 
         $rawAgain = EcdsaSignatureConverter::derToRaw($der, 512);
+        $this->assertSame($raw, $rawAgain);
+    }
+
+    #[Test]
+    #[TestDox('rawToDer: rejects ES512 R component exceeding 521-bit range')]
+    public function raw_to_der_rejects_es512_r_exceeding_bit_range(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('exceeds the valid bit range');
+
+        // R starts with 0x02 → 0x02 & 0xFE = 0x02 ≠ 0, invalid for P-521
+        $r = "\x02".str_repeat("\x00", 65);
+        $s = str_pad("\x01", 66, "\x00", STR_PAD_LEFT);
+
+        EcdsaSignatureConverter::rawToDer($r.$s, 512);
+    }
+
+    #[Test]
+    #[TestDox('rawToDer: rejects ES512 S component exceeding 521-bit range')]
+    public function raw_to_der_rejects_es512_s_exceeding_bit_range(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('exceeds the valid bit range');
+
+        // S starts with 0xFF → 0xFF & 0xFE = 0xFE ≠ 0, invalid for P-521
+        $r = str_pad("\x01", 66, "\x00", STR_PAD_LEFT);
+        $s = str_repeat("\xFF", 66);
+
+        EcdsaSignatureConverter::rawToDer($r.$s, 512);
+    }
+
+    #[Test]
+    #[TestDox('derToRaw: rejects ES512 component exceeding 521-bit range')]
+    public function der_to_raw_rejects_es512_exceeding_bit_range(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('exceeds the valid bit range');
+
+        // R = 0x00 (sign pad) + 0x82 + 65 zero bytes = 67-byte DER INTEGER value
+        // Sign padding is valid (0x82 has high bit set), so non-minimal check passes.
+        // After stripping: 66 bytes starting with 0x82. 0x82 & 0xFE = 0x82 ≠ 0, invalid for P-521.
+        $rValue = "\x00\x82".str_repeat("\x00", 65);
+        $sValue = "\x01";
+        $der = self::buildSimpleDer($rValue, $sValue);
+
+        EcdsaSignatureConverter::derToRaw($der, 512);
+    }
+
+    #[Test]
+    #[TestDox('derToRaw: accepts ES512 component at 521-bit boundary (first byte 0x01)')]
+    public function der_to_raw_accepts_es512_at_521_bit_boundary(): void
+    {
+        // R = 0x01 followed by 65 bytes of 0xFF — valid P-521 (0x01 & 0xFE === 0)
+        $rValue = "\x01".str_repeat("\xFF", 65); // 66 bytes, no sign padding needed
+        $sValue = "\x01";
+        $der = self::buildSimpleDer($rValue, $sValue);
+
+        $raw = EcdsaSignatureConverter::derToRaw($der, 512);
+
+        $this->assertSame(132, strlen($raw));
+        $this->assertSame("\x01".str_repeat("\xFF", 65), substr($raw, 0, 66));
+    }
+
+    #[Test]
+    #[TestDox('rawToDer: accepts ES512 component at 521-bit boundary (first byte 0x01)')]
+    public function raw_to_der_accepts_es512_at_521_bit_boundary(): void
+    {
+        // R = 0x01 followed by 65 bytes of 0xFF, S = 1 — valid P-521
+        $r = "\x01".str_repeat("\xFF", 65);
+        $s = str_pad("\x01", 66, "\x00", STR_PAD_LEFT);
+        $raw = $r.$s;
+
+        $der = EcdsaSignatureConverter::rawToDer($raw, 512);
+        $rawAgain = EcdsaSignatureConverter::derToRaw($der, 512);
+
+        $this->assertSame($raw, $rawAgain);
+    }
+
+    #[Test]
+    #[TestDox('rawToDer: ES256 all-0xFF is accepted (no unused bits for P-256)')]
+    public function raw_to_der_es256_all_ff_accepted(): void
+    {
+        // P-256: 256 bits = 32 bytes exactly, all bits used → 0xFF first byte is valid
+        $raw = str_repeat("\xFF", 64);
+
+        $der = EcdsaSignatureConverter::rawToDer($raw, 256);
+        $rawAgain = EcdsaSignatureConverter::derToRaw($der, 256);
+
         $this->assertSame($raw, $rawAgain);
     }
 

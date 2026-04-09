@@ -29,6 +29,21 @@ final readonly class EcdsaSignatureConverter
     ];
 
     /**
+     * Bitmask of invalid bits in the leading byte of each component.
+     *
+     * When the curve's bit length is not a multiple of 8, the leading byte of a
+     * fixed-length component has unused high bits that must be zero.
+     * P-521 (ES512): 521 bits in 66 bytes → top 7 bits unused → mask 0xFE.
+     *
+     * @var array<int, int>
+     */
+    private const LEADING_BYTE_MASKS = [
+        256 => 0x00,  // P-256: 256 bits = 32 bytes exactly, all bits used
+        384 => 0x00,  // P-384: 384 bits = 48 bytes exactly, all bits used
+        512 => 0xFE,  // P-521: 521 bits in 66 bytes, top 7 bits of first byte must be zero
+    ];
+
+    /**
      * Convert a DER-encoded ECDSA signature to JWS raw (R||S) format.
      *
      * @param string $der         DER-encoded ASN.1 SEQUENCE containing two INTEGERs (r, s)
@@ -88,16 +103,18 @@ final readonly class EcdsaSignatureConverter
         }
         // @codeCoverageIgnoreEnd
 
-        // Validate and strip leading zeros from R and S components.
-        // We intentionally tolerate non-minimal INTEGER encoding (extra leading 0x00 bytes
-        // beyond the sign pad) for interoperability with non-conformant encoders, even though
-        // X.690 Section 8.3.2 requires minimal encoding (no unnecessary leading zero octets beyond the sign pad).
+        // Validate DER INTEGER encoding (X.690 Section 8.3.2: minimal encoding required)
+        // and strip the sign-padding byte from R and S components.
         $r = self::validateAndStripComponent($r, 'R', $componentLength, $keySizeBits);
         $s = self::validateAndStripComponent($s, 'S', $componentLength, $keySizeBits);
 
         // Pad to fixed length for JWS format
         $r = str_pad($r, $componentLength, "\x00", STR_PAD_LEFT);
         $s = str_pad($s, $componentLength, "\x00", STR_PAD_LEFT);
+
+        // Validate that components fit within the curve's actual bit range
+        self::validateComponentBitRange($r, 'R', $keySizeBits);
+        self::validateComponentBitRange($s, 'S', $keySizeBits);
 
         return $r.$s;
     }
@@ -126,6 +143,10 @@ final readonly class EcdsaSignatureConverter
         $r = substr($raw, 0, $componentLength);
         $s = substr($raw, $componentLength);
 
+        // Validate that components fit within the curve's actual bit range
+        self::validateComponentBitRange($r, 'R', $keySizeBits);
+        self::validateComponentBitRange($s, 'S', $keySizeBits);
+
         $derR = self::toDerInteger($r);
         $derS = self::toDerInteger($s);
 
@@ -147,12 +168,34 @@ final readonly class EcdsaSignatureConverter
     }
 
     /**
-     * Validate a DER INTEGER component and strip leading zeros for JWS format.
+     * Validate that a fixed-length component does not exceed the curve's bit range.
+     *
+     * For curves whose bit length is not a multiple of 8 (e.g. P-521 = 521 bits
+     * in 66 bytes), the leading byte has unused high bits that must be zero.
+     *
+     * @param string $component Fixed-length component (already padded or from raw input)
+     *
+     * @throws InvalidArgumentException
+     */
+    private static function validateComponentBitRange(string $component, string $label, int $keySizeBits): void
+    {
+        $mask = self::LEADING_BYTE_MASKS[$keySizeBits];
+
+        if ($mask !== 0x00 && (ord($component[0]) & $mask) !== 0) {
+            throw new InvalidArgumentException(
+                "ECDSA {$label} component exceeds the valid bit range for ES{$keySizeBits} (P-521 values must fit in 521 bits).",
+            );
+        }
+    }
+
+    /**
+     * Validate a DER INTEGER component and strip the sign-padding byte for JWS format.
      *
      * DER INTEGERs are signed two's complement — a set high bit means the value is
      * negative, which is invalid for ECDSA R/S values that must be positive.
-     * After rejecting negatives, leading zeros are stripped to produce a minimal
-     * unsigned big-endian value for fixed-length JWS padding.
+     * X.690 Section 8.3.2 requires minimal encoding: a leading 0x00 is only permitted
+     * when the next byte has its high bit set (sign padding). Non-minimal encodings
+     * (unnecessary leading zeros) are rejected as invalid DER.
      *
      * @return string Stripped component value
      *
@@ -164,9 +207,18 @@ final readonly class EcdsaSignatureConverter
             throw new InvalidArgumentException("DER INTEGER {$label} component is negative, which is invalid for ECDSA signatures.");
         }
 
-        // Strip leading zeros. For a zero-valued integer (e.g., "\x00"), ltrim returns ""
-        // which is valid — the caller pads it to the required component length.
-        $value = ltrim($value, "\x00");
+        // X.690 Section 8.3.2: reject non-minimal INTEGER encoding.
+        // A leading 0x00 is only valid as sign padding when the next byte has its high bit set.
+        if (strlen($value) >= 2 && ord($value[0]) === 0x00 && (ord($value[1]) & 0x80) === 0) {
+            throw new InvalidArgumentException(
+                "DER INTEGER {$label} has non-minimal encoding: unnecessary leading zero byte (X.690 Section 8.3.2).",
+            );
+        }
+
+        // Strip sign-padding byte if present (0x00 followed by byte with high bit set).
+        if (strlen($value) >= 2 && ord($value[0]) === 0x00) {
+            $value = substr($value, 1);
+        }
 
         if (strlen($value) > $componentLength) {
             $len = strlen($value);
