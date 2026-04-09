@@ -40,8 +40,8 @@ final readonly class EcdsaSignature
      * @param string $der   DER-encoded signature
      * @param Curve  $curve The elliptic curve
      *
-     * @throws InvalidDerSignature          If the DER data is structurally malformed
-     * @throws InvalidSignatureComponent    If R or S is out of range (0 < value < n)
+     * @throws InvalidDerSignature       If the DER data is structurally malformed
+     * @throws InvalidSignatureComponent If R or S is out of range (0 < value < n)
      */
     public static function fromDer(string $der, Curve $curve): self
     {
@@ -113,8 +113,8 @@ final readonly class EcdsaSignature
      * @param string $raw   Raw signature: R || S (each component padded to fixed length)
      * @param Curve  $curve The elliptic curve
      *
-     * @throws InvalidRawSignature          If the raw signature length is invalid
-     * @throws InvalidSignatureComponent    If R or S is out of range (0 < value < n)
+     * @throws InvalidRawSignature       If the raw signature length is invalid
+     * @throws InvalidSignatureComponent If R or S is out of range (0 < value < n)
      */
     public static function fromRaw(string $raw, Curve $curve): self
     {
