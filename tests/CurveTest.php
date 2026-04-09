@@ -8,6 +8,8 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\Attributes\TestDox;
 use PHPUnit\Framework\TestCase;
 use StudioDesign\EcdsaSignature\Curve;
+use StudioDesign\EcdsaSignature\Exception\EcdsaSignatureException;
+use StudioDesign\EcdsaSignature\Exception\UnsupportedCurve;
 use ValueError;
 
 final class CurveTest extends TestCase
@@ -44,10 +46,10 @@ final class CurveTest extends TestCase
     }
 
     #[Test]
-    #[TestDox('fromJoseAlg throws ValueError for unsupported algorithm')]
+    #[TestDox('fromJoseAlg throws UnsupportedCurve for unsupported algorithm')]
     public function from_jose_alg_throws_for_unsupported(): void
     {
-        $this->expectException(ValueError::class);
+        $this->expectException(UnsupportedCurve::class);
         $this->expectExceptionMessage('RS256');
 
         Curve::fromJoseAlg('RS256');
@@ -57,7 +59,7 @@ final class CurveTest extends TestCase
     #[TestDox('fromJoseAlg is case-sensitive')]
     public function from_jose_alg_is_case_sensitive(): void
     {
-        $this->expectException(ValueError::class);
+        $this->expectException(UnsupportedCurve::class);
 
         Curve::fromJoseAlg('es256');
     }
@@ -76,13 +78,22 @@ final class CurveTest extends TestCase
     }
 
     #[Test]
-    #[TestDox('fromOpenSslCurveName throws ValueError for unsupported curve name')]
+    #[TestDox('fromOpenSslCurveName throws UnsupportedCurve for unsupported curve name')]
     public function from_openssl_curve_name_throws_for_unsupported(): void
     {
-        $this->expectException(ValueError::class);
+        $this->expectException(UnsupportedCurve::class);
         $this->expectExceptionMessage('secp256k1');
 
         Curve::fromOpenSslCurveName('secp256k1');
+    }
+
+    #[Test]
+    #[TestDox('UnsupportedCurve is catchable as EcdsaSignatureException')]
+    public function unsupported_curve_is_catchable_as_base(): void
+    {
+        $this->expectException(EcdsaSignatureException::class);
+
+        Curve::fromJoseAlg('RS256');
     }
 
     // ---------------------------------------------------------------

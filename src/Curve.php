@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace StudioDesign\EcdsaSignature;
 
-use ValueError;
+use StudioDesign\EcdsaSignature\Exception\UnsupportedCurve;
 
 /**
  * ECDSA curve definitions used by JOSE/JWS algorithm identifiers.
@@ -23,7 +23,7 @@ enum Curve: int
     /**
      * Resolve a curve from a JOSE algorithm name (e.g. "ES256", "ES384", "ES512").
      *
-     * @throws ValueError If the algorithm name is not a supported ECDSA algorithm
+     * @throws UnsupportedCurve If the algorithm name is not a supported ECDSA algorithm
      */
     public static function fromJoseAlg(string $alg): self
     {
@@ -31,14 +31,14 @@ enum Curve: int
             'ES256' => self::P256,
             'ES384' => self::P384,
             'ES512' => self::P521,
-            default => throw new ValueError("Unknown JOSE algorithm \"{$alg}\". Supported: ES256, ES384, ES512."),
+            default => throw new UnsupportedCurve("Unknown JOSE algorithm \"{$alg}\". Supported: ES256, ES384, ES512."),
         };
     }
 
     /**
      * Resolve a curve from an OpenSSL curve name (e.g. "prime256v1", "secp384r1", "secp521r1").
      *
-     * @throws ValueError If the curve name is not supported
+     * @throws UnsupportedCurve If the curve name is not supported
      */
     public static function fromOpenSslCurveName(string $name): self
     {
@@ -46,7 +46,7 @@ enum Curve: int
             'prime256v1' => self::P256,
             'secp384r1'  => self::P384,
             'secp521r1'  => self::P521,
-            default      => throw new ValueError("Unknown OpenSSL curve name \"{$name}\". Supported: prime256v1, secp384r1, secp521r1."),
+            default      => throw new UnsupportedCurve("Unknown OpenSSL curve name \"{$name}\". Supported: prime256v1, secp384r1, secp521r1."),
         };
     }
 

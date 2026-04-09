@@ -164,9 +164,13 @@ use StudioDesign\EcdsaSignature\Exception\EcdsaSignatureException;
 use StudioDesign\EcdsaSignature\Exception\InvalidDerSignature;
 use StudioDesign\EcdsaSignature\Exception\InvalidRawSignature;
 use StudioDesign\EcdsaSignature\Exception\InvalidSignatureComponent;
+use StudioDesign\EcdsaSignature\Exception\UnsupportedCurve;
 
 try {
+    $curve = Curve::fromJoseAlg($alg);
     $sig = EcdsaSignature::fromDer($input, $curve);
+} catch (UnsupportedCurve $e) {
+    // Algorithm name or curve name is not supported
 } catch (InvalidDerSignature $e) {
     // DER structure is malformed (bad tag, truncated, non-minimal encoding, etc.)
 } catch (InvalidSignatureComponent $e) {
@@ -183,17 +187,19 @@ try {
 
 // Or catch everything from this library at once:
 try {
+    $curve = Curve::fromJoseAlg($alg);
     $sig = EcdsaSignature::fromDer($input, $curve);
 } catch (EcdsaSignatureException $e) {
-    // Any signature error
+    // Any error from this library — curve resolution, DER parsing, or range validation
 }
 ```
 
 | Exception | Thrown by | Meaning |
 |-----------|----------|---------|
-| `InvalidDerSignature` | `fromDer()` | DER structure is malformed |
-| `InvalidRawSignature` | `fromRaw()` | Raw signature has wrong byte length |
-| `InvalidSignatureComponent` | `fromDer()`, `fromRaw()` | R or S fails `0 < value < n` check |
+| `UnsupportedCurve` | `Curve::fromJoseAlg()`, `Curve::fromOpenSslCurveName()` | Curve identifier is not supported |
+| `InvalidDerSignature` | `EcdsaSignature::fromDer()` | DER structure is malformed |
+| `InvalidRawSignature` | `EcdsaSignature::fromRaw()` | Raw signature has wrong byte length |
+| `InvalidSignatureComponent` | `EcdsaSignature::fromDer()`, `EcdsaSignature::fromRaw()` | R or S fails `0 < value < n` check |
 | `EcdsaSignatureException` | (base class) | Any of the above |
 
 ## Supported Curves
