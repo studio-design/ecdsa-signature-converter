@@ -19,6 +19,60 @@ enum Curve: int
     case P521 = 512;
 
     /**
+     * Resolve a curve from a JOSE algorithm name (e.g. "ES256", "ES384", "ES512").
+     *
+     * @throws \ValueError If the algorithm name is not a supported ECDSA algorithm
+     */
+    public static function fromJoseAlg(string $alg): self
+    {
+        return match ($alg) {
+            'ES256' => self::P256,
+            'ES384' => self::P384,
+            'ES512' => self::P521,
+            default => throw new \ValueError("Unknown JOSE algorithm \"{$alg}\". Supported: ES256, ES384, ES512."),
+        };
+    }
+
+    /**
+     * Resolve a curve from an OpenSSL curve name (e.g. "prime256v1", "secp384r1", "secp521r1").
+     *
+     * @throws \ValueError If the curve name is not supported
+     */
+    public static function fromOpenSslCurveName(string $name): self
+    {
+        return match ($name) {
+            'prime256v1' => self::P256,
+            'secp384r1'  => self::P384,
+            'secp521r1'  => self::P521,
+            default      => throw new \ValueError("Unknown OpenSSL curve name \"{$name}\". Supported: prime256v1, secp384r1, secp521r1."),
+        };
+    }
+
+    /**
+     * The JOSE algorithm name for this curve (e.g. "ES256").
+     */
+    public function joseAlg(): string
+    {
+        return match ($this) {
+            self::P256 => 'ES256',
+            self::P384 => 'ES384',
+            self::P521 => 'ES512',
+        };
+    }
+
+    /**
+     * The OpenSSL curve name for this curve (e.g. "prime256v1").
+     */
+    public function openSslCurveName(): string
+    {
+        return match ($this) {
+            self::P256 => 'prime256v1',
+            self::P384 => 'secp384r1',
+            self::P521 => 'secp521r1',
+        };
+    }
+
+    /**
      * Per-component byte length for the raw (R||S) signature format.
      */
     public function componentLength(): int
