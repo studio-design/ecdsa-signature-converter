@@ -1,8 +1,8 @@
-# ECDSA Signature Converter
+# ECDSA Signature
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A lightweight PHP library for converting ECDSA signatures between ASN.1 DER and JWS raw (R||S) formats.
+A lightweight PHP value object for ECDSA signatures with DER/JWS raw format conversion and mathematical validation.
 
 ## Why?
 
@@ -10,10 +10,12 @@ OpenSSL and Cloud KMS (Google Cloud KMS, AWS KMS, Azure Key Vault) return ECDSA 
 
 Major PHP JWT libraries (`firebase/php-jwt`, `lcobucci/jwt`, `web-token/jwt-library`) all handle this conversion internally but expose it only as **private** or **@internal** methods. If you're signing JWTs via Cloud KMS or an HSM — where the private key never leaves the remote service — you need this conversion as a standalone utility.
 
+This library provides an immutable value object that guarantees both format correctness and mathematical validity (`0 < r, s < n`).
+
 ## Installation
 
 ```bash
-composer require studio-design/ecdsa-signature-converter
+composer require studio-design/ecdsa-signature
 ```
 
 ## Requirements
@@ -29,13 +31,15 @@ No extensions required. No external dependencies.
 Convert a DER-encoded ECDSA signature (from OpenSSL or Cloud KMS) to JWS raw format:
 
 ```php
-use StudioDesign\EcdsaSignature\EcdsaSignatureConverter;
+use StudioDesign\EcdsaSignature\Curve;
+use StudioDesign\EcdsaSignature\EcdsaSignature;
 
 // Sign with OpenSSL (returns DER format)
 openssl_sign($payload, $derSignature, $privateKey, OPENSSL_ALGO_SHA256);
 
-// Convert to JWS raw format (R||S)
-$rawSignature = EcdsaSignatureConverter::derToRaw($derSignature, keySizeBits: 256);
+// Parse DER and convert to JWS raw format (R||S)
+$sig = EcdsaSignature::fromDer($derSignature, Curve::P256);
+$rawSignature = $sig->toRaw();
 // $rawSignature is now 64 bytes (32-byte R + 32-byte S)
 ```
 
@@ -44,7 +48,8 @@ $rawSignature = EcdsaSignatureConverter::derToRaw($derSignature, keySizeBits: 25
 Convert a JWS raw signature back to DER format for OpenSSL verification:
 
 ```php
-$derSignature = EcdsaSignatureConverter::rawToDer($rawSignature, keySizeBits: 256);
+$sig = EcdsaSignature::fromRaw($rawSignature, Curve::P256);
+$derSignature = $sig->toDer();
 
 // Verify with OpenSSL (expects DER format)
 $result = openssl_verify($payload, $derSignature, $publicKey, OPENSSL_ALGO_SHA256);
@@ -53,7 +58,8 @@ $result = openssl_verify($payload, $derSignature, $publicKey, OPENSSL_ALGO_SHA25
 ### Cloud KMS Example
 
 ```php
-use StudioDesign\EcdsaSignature\EcdsaSignatureConverter;
+use StudioDesign\EcdsaSignature\Curve;
+use StudioDesign\EcdsaSignature\EcdsaSignature;
 
 // 1. Build JWT header and payload
 $header  = base64url_encode(json_encode(['alg' => 'ES256', 'typ' => 'JWT', 'kid' => $kid]));
@@ -65,39 +71,92 @@ $digest = hash('sha256', $signingInput, binary: true);
 $derSignature = $kmsClient->asymmetricSign($keyName, $digest);
 
 // 3. Convert DER signature to JWS raw format
-$rawSignature = EcdsaSignatureConverter::derToRaw($derSignature, keySizeBits: 256);
+$sig = EcdsaSignature::fromDer($derSignature, Curve::P256);
 
 // 4. Assemble JWT
-$jwt = "{$signingInput}." . base64url_encode($rawSignature);
+$jwt = "{$signingInput}." . base64url_encode($sig->toRaw());
 ```
 
-## Supported Key Sizes
+### Accessing Components
 
-| Algorithm | Key Size | Curve | Raw Signature Length |
-|-----------|----------|-------|---------------------|
-| ES256     | 256 bits | P-256 | 64 bytes            |
-| ES384     | 384 bits | P-384 | 96 bytes            |
-| ES512     | 512 bits | P-521 | 132 bytes           |
+```php
+$sig = EcdsaSignature::fromRaw($rawSignature, Curve::P256);
+
+$sig->r();      // R component (32 bytes, fixed-length big-endian binary)
+$sig->s();      // S component (32 bytes, fixed-length big-endian binary)
+$sig->curve();  // Curve::P256
+```
+
+### Using Curve from JOSE Algorithm Number
+
+```php
+// If you have the JOSE algorithm key-size number (256, 384, 512):
+$curve = Curve::from(256);  // Returns Curve::P256
+
+// Or use the enum directly:
+$curve = Curve::P256;
+$curve = Curve::P384;
+$curve = Curve::P521;
+```
+
+## Supported Curves
+
+| Algorithm | Curve Enum   | Curve  | Raw Signature Length |
+|-----------|-------------|--------|---------------------|
+| ES256     | `Curve::P256` | P-256  | 64 bytes            |
+| ES384     | `Curve::P384` | P-384  | 96 bytes            |
+| ES512     | `Curve::P521` | P-521  | 132 bytes           |
+
+## Validation
+
+Both `fromDer()` and `fromRaw()` validate that signature components satisfy `0 < r, s < n` (where `n` is the curve order). Signatures with zero-valued or out-of-range components are rejected with `InvalidArgumentException`.
+
+This ensures that every `EcdsaSignature` instance represents a mathematically plausible ECDSA signature.
 
 ## API Reference
 
-### `EcdsaSignatureConverter::derToRaw(string $der, int $keySizeBits): string`
+### `EcdsaSignature::fromDer(string $der, Curve $curve): self`
 
-Converts a DER-encoded ECDSA signature to JWS raw (R||S) format.
+Parse a DER-encoded ECDSA signature into a value object.
 
 - **`$der`** — DER-encoded ASN.1 SEQUENCE containing two INTEGERs (r, s)
-- **`$keySizeBits`** — ECDSA key size in bits (256, 384, or 512)
-- **Returns** — Raw signature bytes: R (padded) || S (padded)
-- **Throws** `InvalidArgumentException` if the DER data is malformed or the key size is unsupported
+- **`$curve`** — The elliptic curve (`Curve::P256`, `Curve::P384`, or `Curve::P521`)
+- **Throws** `InvalidArgumentException` if the DER data is malformed or values are out of range
 
-### `EcdsaSignatureConverter::rawToDer(string $raw, int $keySizeBits): string`
+### `EcdsaSignature::fromRaw(string $raw, Curve $curve): self`
 
-Converts a JWS raw (R||S) ECDSA signature to ASN.1 DER format.
+Parse a JWS raw (R||S) ECDSA signature into a value object.
 
 - **`$raw`** — Raw signature: R || S (64 bytes for ES256, 96 for ES384, 132 for ES512)
-- **`$keySizeBits`** — ECDSA key size in bits (256, 384, or 512)
-- **Returns** — DER-encoded ASN.1 SEQUENCE containing two INTEGERs (r, s)
-- **Throws** `InvalidArgumentException` if the raw signature length is invalid or the key size is unsupported
+- **`$curve`** — The elliptic curve
+- **Throws** `InvalidArgumentException` if the raw signature length is invalid or values are out of range
+
+### `EcdsaSignature::toDer(): string`
+
+Encode this signature as ASN.1 DER.
+
+### `EcdsaSignature::toRaw(): string`
+
+Encode this signature as JWS raw (R||S) format.
+
+### `EcdsaSignature::r(): string` / `EcdsaSignature::s(): string`
+
+Fixed-length R/S components as big-endian binary strings.
+
+### `EcdsaSignature::curve(): Curve`
+
+The elliptic curve this signature belongs to.
+
+### `Curve` enum
+
+```php
+Curve::P256  // ES256, backing value 256
+Curve::P384  // ES384, backing value 384
+Curve::P521  // ES512, backing value 512
+
+$curve->componentLength();  // Per-component byte length (32, 48, 66)
+$curve->order();            // Curve order as fixed-length binary string
+```
 
 ## Background
 
@@ -110,6 +169,7 @@ The conversion handles:
 - Stripping/adding DER sign-padding bytes (leading `0x00` for positive integers with high bit set)
 - Padding/trimming R and S to fixed-length components
 - Validating DER structure integrity (SEQUENCE tag, length fields, trailing data detection)
+- Validating mathematical range (`0 < r, s < n`)
 
 ## License
 
