@@ -87,6 +87,9 @@ $curve = Curve::fromOpenSslCurveName('secp384r1');   // → Curve::P384
 $curve = Curve::fromOpenSslCurveName('secp521r1');   // → Curve::P521
 
 // From the JOSE key-size integer (256, 384, 512)
+// Note: Curve::from() is PHP's built-in enum method and throws ValueError,
+// not EcdsaSignatureException. Prefer fromJoseAlg() or fromOpenSslCurveName()
+// for consistent error handling.
 $curve = Curve::from(256);  // → Curve::P256
 
 // Reverse lookups
@@ -257,10 +260,10 @@ Curve::P256  // ES256, backing value 256
 Curve::P384  // ES384, backing value 384
 Curve::P521  // ES512, backing value 512
 
-// Factory methods
-Curve::from(256);                           // From JOSE key-size integer
+// Factory methods (recommended)
 Curve::fromJoseAlg('ES256');                // From JOSE algorithm name
 Curve::fromOpenSslCurveName('prime256v1');  // From OpenSSL curve name
+Curve::from(256);                           // PHP built-in enum factory (throws ValueError, not EcdsaSignatureException)
 
 // Properties
 $curve->componentLength();   // Per-component byte length (32, 48, 66)
