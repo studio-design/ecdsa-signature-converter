@@ -12,6 +12,17 @@ Major PHP JWT libraries (`firebase/php-jwt`, `lcobucci/jwt`, `web-token/jwt-libr
 
 This library provides an immutable value object that guarantees both format correctness and mathematical validity (`0 < r, s < n`).
 
+## Non-Goals
+
+This library **does not**:
+
+- Verify ECDSA signatures (use `openssl_verify()` or your KMS provider for that)
+- Generate or manage keys
+- Build or parse JWTs
+- Support non-NIST curves (e.g. secp256k1, Ed25519)
+
+It is a **signature format converter + validated value object**, not a cryptography library.
+
 ## Installation
 
 ```bash
@@ -24,7 +35,7 @@ composer require studio-design/ecdsa-signature
 
 No extensions required. No external dependencies.
 
-## Usage
+## Quick Start
 
 ### DER to Raw (for JWT signing)
 
@@ -55,26 +66,83 @@ $derSignature = $sig->toDer();
 $result = openssl_verify($payload, $derSignature, $publicKey, OPENSSL_ALGO_SHA256);
 ```
 
-### Cloud KMS Example
+## Choosing a Curve
+
+Multiple ways to select a curve, depending on your context:
+
+```php
+use StudioDesign\EcdsaSignature\Curve;
+
+// Direct enum usage
+$curve = Curve::P256;
+
+// From a JOSE algorithm name (JWT header "alg" field)
+$curve = Curve::fromJoseAlg('ES256');   // → Curve::P256
+$curve = Curve::fromJoseAlg('ES384');   // → Curve::P384
+$curve = Curve::fromJoseAlg('ES512');   // → Curve::P521
+
+// From an OpenSSL curve name
+$curve = Curve::fromOpenSslCurveName('prime256v1');  // → Curve::P256
+$curve = Curve::fromOpenSslCurveName('secp384r1');   // → Curve::P384
+$curve = Curve::fromOpenSslCurveName('secp521r1');   // → Curve::P521
+
+// From the JOSE key-size integer (256, 384, 512)
+$curve = Curve::from(256);  // → Curve::P256
+
+// Reverse lookups
+$curve->joseAlg();          // "ES256"
+$curve->openSslCurveName(); // "prime256v1"
+```
+
+## Usage Examples
+
+### JWT with Cloud KMS
 
 ```php
 use StudioDesign\EcdsaSignature\Curve;
 use StudioDesign\EcdsaSignature\EcdsaSignature;
 
-// 1. Build JWT header and payload
-$header  = base64url_encode(json_encode(['alg' => 'ES256', 'typ' => 'JWT', 'kid' => $kid]));
+// 1. Determine curve from JWT algorithm
+$alg = 'ES256';
+$curve = Curve::fromJoseAlg($alg);
+
+// 2. Build JWT header and payload
+$header  = base64url_encode(json_encode(['alg' => $alg, 'typ' => 'JWT', 'kid' => $kid]));
 $payload = base64url_encode(json_encode($claims));
 $signingInput = "{$header}.{$payload}";
 
-// 2. Send digest to Cloud KMS for signing
+// 3. Send digest to Cloud KMS for signing (returns DER)
 $digest = hash('sha256', $signingInput, binary: true);
 $derSignature = $kmsClient->asymmetricSign($keyName, $digest);
 
-// 3. Convert DER signature to JWS raw format
-$sig = EcdsaSignature::fromDer($derSignature, Curve::P256);
+// 4. Convert DER signature to JWS raw format
+$sig = EcdsaSignature::fromDer($derSignature, $curve);
 
-// 4. Assemble JWT
+// 5. Assemble JWT
 $jwt = "{$signingInput}." . base64url_encode($sig->toRaw());
+```
+
+### OpenSSL Sign and Verify
+
+```php
+use StudioDesign\EcdsaSignature\Curve;
+use StudioDesign\EcdsaSignature\EcdsaSignature;
+
+$curve = Curve::fromOpenSslCurveName('prime256v1');
+
+// Sign (OpenSSL produces DER)
+$key = openssl_pkey_new([
+    'ec' => ['curve_name' => $curve->openSslCurveName()],
+    'private_key_type' => OPENSSL_KEYTYPE_EC,
+]);
+openssl_sign($payload, $der, $key, OPENSSL_ALGO_SHA256);
+
+// Convert to raw for JWT
+$raw = EcdsaSignature::fromDer($der, $curve)->toRaw();
+
+// Later: convert raw back to DER for verification
+$derAgain = EcdsaSignature::fromRaw($raw, $curve)->toDer();
+openssl_verify($payload, $derAgain, $publicKey, OPENSSL_ALGO_SHA256);
 ```
 
 ### Accessing Components
@@ -87,29 +155,60 @@ $sig->s();      // S component (32 bytes, fixed-length big-endian binary)
 $sig->curve();  // Curve::P256
 ```
 
-### Using Curve from JOSE Algorithm Number
+## Error Handling
+
+The library provides a structured exception hierarchy. All exceptions extend both `EcdsaSignatureException` and PHP's built-in `InvalidArgumentException`, so existing `catch (InvalidArgumentException)` blocks continue to work.
 
 ```php
-// If you have the JOSE algorithm key-size number (256, 384, 512):
-$curve = Curve::from(256);  // Returns Curve::P256
+use StudioDesign\EcdsaSignature\Exception\EcdsaSignatureException;
+use StudioDesign\EcdsaSignature\Exception\InvalidDerSignature;
+use StudioDesign\EcdsaSignature\Exception\InvalidRawSignature;
+use StudioDesign\EcdsaSignature\Exception\InvalidSignatureComponent;
 
-// Or use the enum directly:
-$curve = Curve::P256;
-$curve = Curve::P384;
-$curve = Curve::P521;
+try {
+    $sig = EcdsaSignature::fromDer($input, $curve);
+} catch (InvalidDerSignature $e) {
+    // DER structure is malformed (bad tag, truncated, non-minimal encoding, etc.)
+} catch (InvalidSignatureComponent $e) {
+    // R or S is mathematically out of range (zero, >= curve order, oversized)
+}
+
+try {
+    $sig = EcdsaSignature::fromRaw($input, $curve);
+} catch (InvalidRawSignature $e) {
+    // Wrong byte length for the given curve
+} catch (InvalidSignatureComponent $e) {
+    // R or S is mathematically out of range
+}
+
+// Or catch everything from this library at once:
+try {
+    $sig = EcdsaSignature::fromDer($input, $curve);
+} catch (EcdsaSignatureException $e) {
+    // Any signature error
+}
 ```
+
+| Exception | Thrown by | Meaning |
+|-----------|----------|---------|
+| `InvalidDerSignature` | `fromDer()` | DER structure is malformed |
+| `InvalidRawSignature` | `fromRaw()` | Raw signature has wrong byte length |
+| `InvalidSignatureComponent` | `fromDer()`, `fromRaw()` | R or S fails `0 < value < n` check |
+| `EcdsaSignatureException` | (base class) | Any of the above |
 
 ## Supported Curves
 
-| Algorithm | Curve Enum   | Curve  | Raw Signature Length |
-|-----------|-------------|--------|---------------------|
-| ES256     | `Curve::P256` | P-256  | 64 bytes            |
-| ES384     | `Curve::P384` | P-384  | 96 bytes            |
-| ES512     | `Curve::P521` | P-521  | 132 bytes           |
+| JOSE Algorithm | Curve Enum    | OpenSSL Name  | Curve  | Raw Signature Length |
+|----------------|--------------|---------------|--------|---------------------|
+| ES256          | `Curve::P256` | `prime256v1`  | P-256  | 64 bytes            |
+| ES384          | `Curve::P384` | `secp384r1`   | P-384  | 96 bytes            |
+| ES512          | `Curve::P521` | `secp521r1`   | P-521  | 132 bytes           |
 
 ## Validation
 
-Both `fromDer()` and `fromRaw()` validate that signature components satisfy `0 < r, s < n` (where `n` is the curve order). Signatures with zero-valued or out-of-range components are rejected with `InvalidArgumentException`.
+Both `fromDer()` and `fromRaw()` validate that signature components satisfy `0 < r, s < n` (where `n` is the curve order). Signatures with zero-valued or out-of-range components are rejected.
+
+`fromDer()` additionally enforces strict DER encoding rules per X.690: minimal integer encoding, proper tag/length structure, no trailing data.
 
 This ensures that every `EcdsaSignature` instance represents a mathematically plausible ECDSA signature.
 
@@ -117,19 +216,17 @@ This ensures that every `EcdsaSignature` instance represents a mathematically pl
 
 ### `EcdsaSignature::fromDer(string $der, Curve $curve): self`
 
-Parse a DER-encoded ECDSA signature into a value object.
+Parse a DER-encoded ECDSA signature.
 
-- **`$der`** — DER-encoded ASN.1 SEQUENCE containing two INTEGERs (r, s)
-- **`$curve`** — The elliptic curve (`Curve::P256`, `Curve::P384`, or `Curve::P521`)
-- **Throws** `InvalidArgumentException` if the DER data is malformed or values are out of range
+- **Throws** `InvalidDerSignature` if the DER data is structurally malformed
+- **Throws** `InvalidSignatureComponent` if R or S is out of range
 
 ### `EcdsaSignature::fromRaw(string $raw, Curve $curve): self`
 
-Parse a JWS raw (R||S) ECDSA signature into a value object.
+Parse a JWS raw (R||S) ECDSA signature.
 
-- **`$raw`** — Raw signature: R || S (64 bytes for ES256, 96 for ES384, 132 for ES512)
-- **`$curve`** — The elliptic curve
-- **Throws** `InvalidArgumentException` if the raw signature length is invalid or values are out of range
+- **Throws** `InvalidRawSignature` if the byte length is wrong for the given curve
+- **Throws** `InvalidSignatureComponent` if R or S is out of range
 
 ### `EcdsaSignature::toDer(): string`
 
@@ -154,8 +251,16 @@ Curve::P256  // ES256, backing value 256
 Curve::P384  // ES384, backing value 384
 Curve::P521  // ES512, backing value 512
 
-$curve->componentLength();  // Per-component byte length (32, 48, 66)
-$curve->order();            // Curve order as fixed-length binary string
+// Factory methods
+Curve::from(256);                           // From JOSE key-size integer
+Curve::fromJoseAlg('ES256');                // From JOSE algorithm name
+Curve::fromOpenSslCurveName('prime256v1');  // From OpenSSL curve name
+
+// Properties
+$curve->componentLength();   // Per-component byte length (32, 48, 66)
+$curve->order();             // Curve order as fixed-length binary string
+$curve->joseAlg();           // JOSE algorithm name ("ES256", "ES384", "ES512")
+$curve->openSslCurveName();  // OpenSSL curve name ("prime256v1", "secp384r1", "secp521r1")
 ```
 
 ## Background

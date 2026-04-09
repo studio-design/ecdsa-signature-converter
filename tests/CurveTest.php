@@ -30,6 +30,105 @@ final class CurveTest extends TestCase
         Curve::from(128);
     }
 
+    // ---------------------------------------------------------------
+    // fromJoseAlg
+    // ---------------------------------------------------------------
+
+    #[Test]
+    #[TestDox('fromJoseAlg resolves ES256, ES384, ES512')]
+    public function from_jose_alg_resolves_valid_algorithms(): void
+    {
+        $this->assertSame(Curve::P256, Curve::fromJoseAlg('ES256'));
+        $this->assertSame(Curve::P384, Curve::fromJoseAlg('ES384'));
+        $this->assertSame(Curve::P521, Curve::fromJoseAlg('ES512'));
+    }
+
+    #[Test]
+    #[TestDox('fromJoseAlg throws ValueError for unsupported algorithm')]
+    public function from_jose_alg_throws_for_unsupported(): void
+    {
+        $this->expectException(ValueError::class);
+        $this->expectExceptionMessage('RS256');
+
+        Curve::fromJoseAlg('RS256');
+    }
+
+    #[Test]
+    #[TestDox('fromJoseAlg is case-sensitive')]
+    public function from_jose_alg_is_case_sensitive(): void
+    {
+        $this->expectException(ValueError::class);
+
+        Curve::fromJoseAlg('es256');
+    }
+
+    // ---------------------------------------------------------------
+    // fromOpenSslCurveName
+    // ---------------------------------------------------------------
+
+    #[Test]
+    #[TestDox('fromOpenSslCurveName resolves prime256v1, secp384r1, secp521r1')]
+    public function from_openssl_curve_name_resolves_valid_names(): void
+    {
+        $this->assertSame(Curve::P256, Curve::fromOpenSslCurveName('prime256v1'));
+        $this->assertSame(Curve::P384, Curve::fromOpenSslCurveName('secp384r1'));
+        $this->assertSame(Curve::P521, Curve::fromOpenSslCurveName('secp521r1'));
+    }
+
+    #[Test]
+    #[TestDox('fromOpenSslCurveName throws ValueError for unsupported curve name')]
+    public function from_openssl_curve_name_throws_for_unsupported(): void
+    {
+        $this->expectException(ValueError::class);
+        $this->expectExceptionMessage('secp256k1');
+
+        Curve::fromOpenSslCurveName('secp256k1');
+    }
+
+    // ---------------------------------------------------------------
+    // joseAlg / openSslCurveName
+    // ---------------------------------------------------------------
+
+    #[Test]
+    #[TestDox('joseAlg returns the JOSE algorithm name')]
+    public function jose_alg_returns_correct_names(): void
+    {
+        $this->assertSame('ES256', Curve::P256->joseAlg());
+        $this->assertSame('ES384', Curve::P384->joseAlg());
+        $this->assertSame('ES512', Curve::P521->joseAlg());
+    }
+
+    #[Test]
+    #[TestDox('openSslCurveName returns the OpenSSL curve name')]
+    public function openssl_curve_name_returns_correct_names(): void
+    {
+        $this->assertSame('prime256v1', Curve::P256->openSslCurveName());
+        $this->assertSame('secp384r1', Curve::P384->openSslCurveName());
+        $this->assertSame('secp521r1', Curve::P521->openSslCurveName());
+    }
+
+    #[Test]
+    #[TestDox('fromJoseAlg and joseAlg are inverse operations')]
+    public function jose_alg_round_trip(): void
+    {
+        foreach (Curve::cases() as $curve) {
+            $this->assertSame($curve, Curve::fromJoseAlg($curve->joseAlg()));
+        }
+    }
+
+    #[Test]
+    #[TestDox('fromOpenSslCurveName and openSslCurveName are inverse operations')]
+    public function openssl_curve_name_round_trip(): void
+    {
+        foreach (Curve::cases() as $curve) {
+            $this->assertSame($curve, Curve::fromOpenSslCurveName($curve->openSslCurveName()));
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // componentLength / order
+    // ---------------------------------------------------------------
+
     #[Test]
     #[TestDox('componentLength returns correct byte lengths')]
     public function component_length_returns_correct_values(): void

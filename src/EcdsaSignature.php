@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace StudioDesign\EcdsaSignature;
 
-use InvalidArgumentException;
+use StudioDesign\EcdsaSignature\Exception\InvalidDerSignature;
+use StudioDesign\EcdsaSignature\Exception\InvalidRawSignature;
+use StudioDesign\EcdsaSignature\Exception\InvalidSignatureComponent;
 
 /**
  * Immutable value object representing an ECDSA signature (r, s) on a named curve.
@@ -38,16 +40,17 @@ final readonly class EcdsaSignature
      * @param string $der   DER-encoded signature
      * @param Curve  $curve The elliptic curve
      *
-     * @throws InvalidArgumentException If the DER data is malformed or values are out of range
+     * @throws InvalidDerSignature       If the DER data is structurally malformed
+     * @throws InvalidSignatureComponent If R or S is out of range (0 < value < n)
      */
     public static function fromDer(string $der, Curve $curve): self
     {
         if (strlen($der) < 8) {
-            throw new InvalidArgumentException('DER signature is too short to be a valid ECDSA signature.');
+            throw new InvalidDerSignature('DER signature is too short to be a valid ECDSA signature.');
         }
 
         if (ord($der[0]) !== 0x30) {
-            throw new InvalidArgumentException('DER signature does not start with SEQUENCE tag (0x30).');
+            throw new InvalidDerSignature('DER signature does not start with SEQUENCE tag (0x30).');
         }
 
         $componentLength = $curve->componentLength();
@@ -57,25 +60,25 @@ final readonly class EcdsaSignature
 
         // Validate SEQUENCE spans the entire input (no trailing data after SEQUENCE)
         if ($seqEnd !== strlen($der)) {
-            throw new InvalidArgumentException('DER signature contains trailing data after SEQUENCE.');
+            throw new InvalidDerSignature('DER signature contains trailing data after SEQUENCE.');
         }
 
         // Extract INTEGER components R and S
         ['offset' => $offset, 'data' => $r, 'tag' => $rTag] = self::readDer($der, $offset);
 
         if ($offset >= $seqEnd) {
-            throw new InvalidArgumentException('DER SEQUENCE must contain two INTEGER components (R and S), but only one was found.');
+            throw new InvalidDerSignature('DER SEQUENCE must contain two INTEGER components (R and S), but only one was found.');
         }
 
         ['offset' => $endPos, 'data' => $s, 'tag' => $sTag] = self::readDer($der, $offset);
 
         if ($rTag !== 0x02 || $sTag !== 0x02) {
-            throw new InvalidArgumentException('DER signature R and S components must be INTEGERs (tag 0x02).');
+            throw new InvalidDerSignature('DER signature R and S components must be INTEGERs (tag 0x02).');
         }
 
         // Validate children consumed all SEQUENCE content (no intra-SEQUENCE garbage)
         if ($endPos !== $seqEnd) {
-            throw new InvalidArgumentException('DER SEQUENCE content length does not match its declared length.');
+            throw new InvalidDerSignature('DER SEQUENCE content length does not match its declared length.');
         }
 
         // Defense-in-depth: the tag check above ensures both R and S have INTEGER tag (0x02),
@@ -84,7 +87,7 @@ final readonly class EcdsaSignature
         // therefore normally unreachable.
         // @codeCoverageIgnoreStart
         if (! is_string($r) || ! is_string($s) || $r === '' || $s === '') {
-            throw new InvalidArgumentException('Failed to extract R and S components from DER signature.');
+            throw new InvalidDerSignature('Failed to extract R and S components from DER signature.');
         }
         // @codeCoverageIgnoreEnd
 
@@ -110,7 +113,8 @@ final readonly class EcdsaSignature
      * @param string $raw   Raw signature: R || S (each component padded to fixed length)
      * @param Curve  $curve The elliptic curve
      *
-     * @throws InvalidArgumentException If the raw signature length is invalid or values are out of range
+     * @throws InvalidRawSignature       If the raw signature length is invalid
+     * @throws InvalidSignatureComponent If R or S is out of range (0 < value < n)
      */
     public static function fromRaw(string $raw, Curve $curve): self
     {
@@ -118,7 +122,7 @@ final readonly class EcdsaSignature
         $expectedLength = $componentLength * 2;
 
         if (strlen($raw) !== $expectedLength) {
-            throw new InvalidArgumentException("Raw signature must be exactly {$expectedLength} bytes for ES{$curve->value}, got ".strlen($raw).'.');
+            throw new InvalidRawSignature("Raw signature must be exactly {$expectedLength} bytes for ES{$curve->value}, got ".strlen($raw).'.');
         }
 
         $r = substr($raw, 0, $componentLength);
@@ -183,18 +187,18 @@ final readonly class EcdsaSignature
      *
      * @param string $value Fixed-length component (componentLength bytes)
      *
-     * @throws InvalidArgumentException
+     * @throws InvalidSignatureComponent
      */
     private static function validateRange(string $value, string $label, Curve $curve): void
     {
         $zero = str_repeat("\x00", $curve->componentLength());
 
         if ($value === $zero) {
-            throw new InvalidArgumentException("ECDSA {$label} component must be greater than zero.");
+            throw new InvalidSignatureComponent("ECDSA {$label} component must be greater than zero.");
         }
 
         if (strcmp($value, $curve->order()) >= 0) {
-            throw new InvalidArgumentException("ECDSA {$label} component must be less than the curve order for ES{$curve->value}.");
+            throw new InvalidSignatureComponent("ECDSA {$label} component must be less than the curve order for ES{$curve->value}.");
         }
     }
 
@@ -209,18 +213,19 @@ final readonly class EcdsaSignature
      *
      * @return string Stripped component value
      *
-     * @throws InvalidArgumentException
+     * @throws InvalidDerSignature
+     * @throws InvalidSignatureComponent
      */
     private static function validateAndStripComponent(string $value, string $label, Curve $curve): string
     {
         if ((ord($value[0]) & 0x80) !== 0) {
-            throw new InvalidArgumentException("DER INTEGER {$label} component is negative, which is invalid for ECDSA signatures.");
+            throw new InvalidDerSignature("DER INTEGER {$label} component is negative, which is invalid for ECDSA signatures.");
         }
 
         // X.690 Section 8.3.2: reject non-minimal INTEGER encoding.
         // A leading 0x00 is only valid as sign padding when the next byte has its high bit set.
         if (strlen($value) >= 2 && ord($value[0]) === 0x00 && (ord($value[1]) & 0x80) === 0) {
-            throw new InvalidArgumentException(
+            throw new InvalidDerSignature(
                 "DER INTEGER {$label} has non-minimal encoding: unnecessary leading zero byte (X.690 Section 8.3.2).",
             );
         }
@@ -234,7 +239,7 @@ final readonly class EcdsaSignature
 
         if (strlen($value) > $componentLength) {
             $len = strlen($value);
-            throw new InvalidArgumentException(
+            throw new InvalidSignatureComponent(
                 "DER INTEGER {$label} value ({$len} bytes) exceeds {$componentLength}-byte limit for ES{$curve->value}.",
             );
         }
@@ -290,14 +295,14 @@ final readonly class EcdsaSignature
      *
      * @return array{offset: int, data: string|null, tag: int, contentEnd: int}
      *
-     * @throws InvalidArgumentException
+     * @throws InvalidDerSignature
      */
     private static function readDer(string $der, int $offset = 0): array
     {
         $size = strlen($der);
 
         if ($offset < 0 || $offset >= $size) {
-            throw new InvalidArgumentException("DER read offset {$offset} is out of bounds for data length {$size}.");
+            throw new InvalidDerSignature("DER read offset {$offset} is out of bounds for data length {$size}.");
         }
 
         $pos = $offset;
@@ -307,7 +312,7 @@ final readonly class EcdsaSignature
 
         // Reject non-Universal class tags
         if (($tagByte & 0xC0) !== 0x00) {
-            throw new InvalidArgumentException(
+            throw new InvalidDerSignature(
                 sprintf('DER non-Universal class tag (0x%02X) is not supported for ECDSA signatures.', $tagByte),
             );
         }
@@ -317,11 +322,11 @@ final readonly class EcdsaSignature
         $pos++;
 
         if ($type === 0x1F) {
-            throw new InvalidArgumentException('DER multi-byte tag numbers are not supported.');
+            throw new InvalidDerSignature('DER multi-byte tag numbers are not supported.');
         }
 
         if ($pos >= $size) {
-            throw new InvalidArgumentException('DER data truncated: missing length byte.');
+            throw new InvalidDerSignature('DER data truncated: missing length byte.');
         }
 
         // Length
@@ -331,11 +336,11 @@ final readonly class EcdsaSignature
             $n = $len & 0x7F;
 
             if ($n === 0) {
-                throw new InvalidArgumentException('DER indefinite-length encoding (0x80) is not permitted.');
+                throw new InvalidDerSignature('DER indefinite-length encoding (0x80) is not permitted.');
             }
 
             if ($n > 4) {
-                throw new InvalidArgumentException('DER length field exceeds 4 bytes, which is unreasonably large for ECDSA signatures.');
+                throw new InvalidDerSignature('DER length field exceeds 4 bytes, which is unreasonably large for ECDSA signatures.');
             }
 
             $nBytes = $n;
@@ -346,27 +351,27 @@ final readonly class EcdsaSignature
             }
 
             if ($i < $nBytes) {
-                throw new InvalidArgumentException('DER data truncated: multi-byte length field is incomplete.');
+                throw new InvalidDerSignature('DER data truncated: multi-byte length field is incomplete.');
             }
 
             // Guard against integer overflow on 32-bit PHP
             // @codeCoverageIgnoreStart
             if ($len < 0) {
-                throw new InvalidArgumentException('DER length field overflowed integer range.');
+                throw new InvalidDerSignature('DER length field overflowed integer range.');
             }
             // @codeCoverageIgnoreEnd
 
             // DER requires shortest possible length encoding
             if ($len < 0x80) {
-                throw new InvalidArgumentException('DER non-minimal length encoding: value fits in short form.');
+                throw new InvalidDerSignature('DER non-minimal length encoding: value fits in short form.');
             }
             if ($nBytes > 1 && $len < (1 << (8 * ($nBytes - 1)))) {
-                throw new InvalidArgumentException('DER non-minimal length encoding: uses more octets than necessary.');
+                throw new InvalidDerSignature('DER non-minimal length encoding: uses more octets than necessary.');
             }
         }
 
         if ($pos + $len > $size) {
-            throw new InvalidArgumentException('DER data truncated: value extends beyond data length.');
+            throw new InvalidDerSignature('DER data truncated: value extends beyond data length.');
         }
 
         $contentEnd = $pos + $len;
@@ -376,7 +381,7 @@ final readonly class EcdsaSignature
         } else {
             // X.690 Section 8.3.1: INTEGER contents must be at least one octet
             if ($type === 0x02 && $len === 0) {
-                throw new InvalidArgumentException('DER INTEGER must have at least one content octet (X.690 Section 8.3.1).');
+                throw new InvalidDerSignature('DER INTEGER must have at least one content octet (X.690 Section 8.3.1).');
             }
             $data = substr($der, $pos, $len);
             $pos += $len;

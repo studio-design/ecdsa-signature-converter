@@ -12,6 +12,10 @@ use PHPUnit\Framework\Attributes\TestDox;
 use PHPUnit\Framework\TestCase;
 use StudioDesign\EcdsaSignature\Curve;
 use StudioDesign\EcdsaSignature\EcdsaSignature;
+use StudioDesign\EcdsaSignature\Exception\EcdsaSignatureException;
+use StudioDesign\EcdsaSignature\Exception\InvalidDerSignature;
+use StudioDesign\EcdsaSignature\Exception\InvalidRawSignature;
+use StudioDesign\EcdsaSignature\Exception\InvalidSignatureComponent;
 
 final class EcdsaSignatureTest extends TestCase
 {
@@ -57,118 +61,176 @@ final class EcdsaSignatureTest extends TestCase
     }
 
     // ---------------------------------------------------------------
+    // Exception hierarchy: backward compatibility
+    // ---------------------------------------------------------------
+
+    #[Test]
+    #[TestDox('InvalidDerSignature is catchable as InvalidArgumentException')]
+    public function invalid_der_is_catchable_as_invalid_argument_exception(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+
+        EcdsaSignature::fromDer("\x30\x00", Curve::P256);
+    }
+
+    #[Test]
+    #[TestDox('InvalidRawSignature is catchable as InvalidArgumentException')]
+    public function invalid_raw_is_catchable_as_invalid_argument_exception(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+
+        EcdsaSignature::fromRaw('short', Curve::P256);
+    }
+
+    #[Test]
+    #[TestDox('InvalidSignatureComponent is catchable as InvalidArgumentException')]
+    public function invalid_component_is_catchable_as_invalid_argument_exception(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+
+        EcdsaSignature::fromRaw(str_repeat("\x00", 64), Curve::P256);
+    }
+
+    #[Test]
+    #[TestDox('All signature exceptions are catchable as EcdsaSignatureException')]
+    public function all_exceptions_catchable_as_base(): void
+    {
+        $caught = 0;
+
+        try {
+            EcdsaSignature::fromDer("\x30\x00", Curve::P256);
+        } catch (EcdsaSignatureException) {
+            $caught++;
+        }
+
+        try {
+            EcdsaSignature::fromRaw('short', Curve::P256);
+        } catch (EcdsaSignatureException) {
+            $caught++;
+        }
+
+        try {
+            EcdsaSignature::fromRaw(str_repeat("\x00", 64), Curve::P256);
+        } catch (EcdsaSignatureException) {
+            $caught++;
+        }
+
+        $this->assertSame(3, $caught);
+    }
+
+    // ---------------------------------------------------------------
     // fromDer: DER parsing errors
     // ---------------------------------------------------------------
 
     #[Test]
-    #[TestDox('fromDer: throws for too-short DER data')]
+    #[TestDox('fromDer: throws InvalidDerSignature for too-short DER data')]
     public function from_der_throws_for_short_der(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidDerSignature::class);
         $this->expectExceptionMessage('too short');
 
         EcdsaSignature::fromDer("\x30\x00", Curve::P256);
     }
 
     #[Test]
-    #[TestDox('fromDer: throws when DER does not start with SEQUENCE tag')]
+    #[TestDox('fromDer: throws InvalidDerSignature when DER does not start with SEQUENCE tag')]
     public function from_der_throws_for_invalid_sequence_tag(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidDerSignature::class);
         $this->expectExceptionMessage('SEQUENCE tag');
 
         EcdsaSignature::fromDer("\x02\x01\x00\x02\x01\x00\x00\x00", Curve::P256);
     }
 
     #[Test]
-    #[TestDox('fromDer: throws for trailing data after SEQUENCE')]
+    #[TestDox('fromDer: throws InvalidDerSignature for trailing data after SEQUENCE')]
     public function from_der_throws_for_trailing_data(): void
     {
         $ecKey = self::createEcKey();
 
         $this->assertTrue(openssl_sign('test-payload', $der, $ecKey, OPENSSL_ALGO_SHA256), 'openssl_sign failed: '.(openssl_error_string() ?: 'unknown error'));
 
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidDerSignature::class);
         $this->expectExceptionMessage('trailing data');
 
         EcdsaSignature::fromDer($der."\x00", Curve::P256);
     }
 
     #[Test]
-    #[TestDox('fromDer: throws for truncated multi-byte length field')]
+    #[TestDox('fromDer: throws InvalidDerSignature for truncated multi-byte length field')]
     public function from_der_throws_for_truncated_multi_byte_length(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidDerSignature::class);
         $this->expectExceptionMessage('multi-byte length field is incomplete');
 
         EcdsaSignature::fromDer("\x30\x06\x02\x01\x01\x02\x83\x00", Curve::P256);
     }
 
     #[Test]
-    #[TestDox('fromDer: throws when R or S component has non-INTEGER tag')]
+    #[TestDox('fromDer: throws InvalidDerSignature when R or S component has non-INTEGER tag')]
     public function from_der_throws_for_non_integer_tag(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidDerSignature::class);
         $this->expectExceptionMessage('must be INTEGERs');
 
         EcdsaSignature::fromDer("\x30\x06\x04\x01\x01\x02\x01\x01", Curve::P256);
     }
 
     #[Test]
-    #[TestDox('fromDer: throws when S component has non-INTEGER tag')]
+    #[TestDox('fromDer: throws InvalidDerSignature when S component has non-INTEGER tag')]
     public function from_der_throws_for_non_integer_s_tag(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidDerSignature::class);
         $this->expectExceptionMessage('must be INTEGERs');
 
         EcdsaSignature::fromDer("\x30\x06\x02\x01\x01\x04\x01\x01", Curve::P256);
     }
 
     #[Test]
-    #[TestDox('fromDer: throws for empty string input')]
+    #[TestDox('fromDer: throws InvalidDerSignature for empty string input')]
     public function from_der_throws_for_empty_input(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidDerSignature::class);
         $this->expectExceptionMessage('too short');
 
         EcdsaSignature::fromDer('', Curve::P256);
     }
 
     #[Test]
-    #[TestDox('fromDer: throws when SEQUENCE contains only one INTEGER')]
+    #[TestDox('fromDer: throws InvalidDerSignature when SEQUENCE contains only one INTEGER')]
     public function from_der_throws_for_single_component(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidDerSignature::class);
         $this->expectExceptionMessage('must contain two INTEGER components');
 
         EcdsaSignature::fromDer("\x30\x06\x02\x04\x00\x00\x00\x01", Curve::P256);
     }
 
     #[Test]
-    #[TestDox('fromDer: throws when SEQUENCE content length does not match parsed children')]
+    #[TestDox('fromDer: throws InvalidDerSignature when SEQUENCE content length does not match parsed children')]
     public function from_der_throws_for_sequence_length_mismatch(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidDerSignature::class);
         $this->expectExceptionMessage('SEQUENCE content length');
 
         EcdsaSignature::fromDer("\x30\x08\x02\x01\x01\x02\x01\x01\x00\x00", Curve::P256);
     }
 
     #[Test]
-    #[TestDox('fromDer: throws for negative DER INTEGER R')]
+    #[TestDox('fromDer: throws InvalidDerSignature for negative DER INTEGER R')]
     public function from_der_throws_for_negative_r(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidDerSignature::class);
         $this->expectExceptionMessage('R component is negative');
 
         EcdsaSignature::fromDer("\x30\x06\x02\x01\xFF\x02\x01\x01", Curve::P256);
     }
 
     #[Test]
-    #[TestDox('fromDer: throws for negative DER INTEGER S')]
+    #[TestDox('fromDer: throws InvalidDerSignature for negative DER INTEGER S')]
     public function from_der_throws_for_negative_s(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidDerSignature::class);
         $this->expectExceptionMessage('S component is negative');
 
         EcdsaSignature::fromDer("\x30\x06\x02\x01\x01\x02\x01\xFF", Curve::P256);
@@ -178,7 +240,7 @@ final class EcdsaSignatureTest extends TestCase
     #[TestDox('fromDer: rejects non-minimal INTEGER encoding in R')]
     public function from_der_rejects_non_minimal_r(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidDerSignature::class);
         $this->expectExceptionMessage('non-minimal encoding');
 
         EcdsaSignature::fromDer("\x30\x08\x02\x03\x00\x00\x01\x02\x01\x01", Curve::P256);
@@ -188,17 +250,17 @@ final class EcdsaSignatureTest extends TestCase
     #[TestDox('fromDer: rejects non-minimal INTEGER encoding in S')]
     public function from_der_rejects_non_minimal_s(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidDerSignature::class);
         $this->expectExceptionMessage('non-minimal encoding');
 
         EcdsaSignature::fromDer("\x30\x07\x02\x01\x01\x02\x02\x00\x01", Curve::P256);
     }
 
     #[Test]
-    #[TestDox('fromDer: throws when DER INTEGER value exceeds component length (R)')]
+    #[TestDox('fromDer: throws InvalidSignatureComponent when DER INTEGER value exceeds component length (R)')]
     public function from_der_throws_for_oversized_r(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidSignatureComponent::class);
         $this->expectExceptionMessage('R value (33 bytes) exceeds');
 
         $der = self::buildSimpleDer(str_repeat("\x01", 33), "\x01");
@@ -207,10 +269,10 @@ final class EcdsaSignatureTest extends TestCase
     }
 
     #[Test]
-    #[TestDox('fromDer: throws when DER INTEGER value exceeds component length (S)')]
+    #[TestDox('fromDer: throws InvalidSignatureComponent when DER INTEGER value exceeds component length (S)')]
     public function from_der_throws_for_oversized_s(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidSignatureComponent::class);
         $this->expectExceptionMessage('S value (33 bytes) exceeds');
 
         $der = self::buildSimpleDer("\x01", str_repeat("\x01", 33));
@@ -219,100 +281,100 @@ final class EcdsaSignatureTest extends TestCase
     }
 
     #[Test]
-    #[TestDox('fromDer: throws when DER INTEGER has zero length')]
+    #[TestDox('fromDer: throws InvalidDerSignature when DER INTEGER has zero length')]
     public function from_der_throws_for_zero_length_integer(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidDerSignature::class);
         $this->expectExceptionMessage('at least one content octet');
 
         EcdsaSignature::fromDer("\x30\x08\x02\x00\x02\x04\x00\x00\x00\x01", Curve::P256);
     }
 
     #[Test]
-    #[TestDox('fromDer: throws when DER INTEGER S has zero length')]
+    #[TestDox('fromDer: throws InvalidDerSignature when DER INTEGER S has zero length')]
     public function from_der_throws_for_zero_length_s_integer(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidDerSignature::class);
         $this->expectExceptionMessage('at least one content octet');
 
         EcdsaSignature::fromDer("\x30\x08\x02\x04\x00\x00\x00\x01\x02\x00", Curve::P256);
     }
 
     #[Test]
-    #[TestDox('fromDer: throws when DER INTEGER value extends beyond data length')]
+    #[TestDox('fromDer: throws InvalidDerSignature when DER INTEGER value extends beyond data length')]
     public function from_der_throws_for_truncated_value(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidDerSignature::class);
         $this->expectExceptionMessage('value extends beyond data length');
 
         EcdsaSignature::fromDer("\x30\x06\x02\x05\x01\x02\x03\x04", Curve::P256);
     }
 
     #[Test]
-    #[TestDox('fromDer: throws when second INTEGER has missing length byte')]
+    #[TestDox('fromDer: throws InvalidDerSignature when second INTEGER has missing length byte')]
     public function from_der_throws_for_missing_length_byte(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidDerSignature::class);
         $this->expectExceptionMessage('missing length byte');
 
         EcdsaSignature::fromDer("\x30\x06\x02\x03\x00\x00\x01\x02", Curve::P256);
     }
 
     #[Test]
-    #[TestDox('fromDer: throws for DER indefinite-length encoding')]
+    #[TestDox('fromDer: throws InvalidDerSignature for DER indefinite-length encoding')]
     public function from_der_throws_for_indefinite_length(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidDerSignature::class);
         $this->expectExceptionMessage('indefinite-length');
 
         EcdsaSignature::fromDer("\x30\x80\x02\x01\x01\x02\x01\x01", Curve::P256);
     }
 
     #[Test]
-    #[TestDox('fromDer: throws for non-Universal class tag')]
+    #[TestDox('fromDer: throws InvalidDerSignature for non-Universal class tag')]
     public function from_der_throws_for_non_universal_class_tag(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidDerSignature::class);
         $this->expectExceptionMessage('non-Universal class tag');
 
         EcdsaSignature::fromDer("\x30\x06\xA0\x01\x01\x02\x01\x01", Curve::P256);
     }
 
     #[Test]
-    #[TestDox('fromDer: throws for application class tag')]
+    #[TestDox('fromDer: throws InvalidDerSignature for application class tag')]
     public function from_der_throws_for_application_class_tag(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidDerSignature::class);
         $this->expectExceptionMessage('non-Universal class tag');
 
         EcdsaSignature::fromDer("\x30\x06\x42\x01\x01\x02\x01\x01", Curve::P256);
     }
 
     #[Test]
-    #[TestDox('fromDer: throws for multi-byte ASN.1 tag number')]
+    #[TestDox('fromDer: throws InvalidDerSignature for multi-byte ASN.1 tag number')]
     public function from_der_throws_for_multi_byte_tag(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidDerSignature::class);
         $this->expectExceptionMessage('multi-byte tag');
 
         EcdsaSignature::fromDer("\x30\x06\x1F\x01\x01\x02\x01\x01", Curve::P256);
     }
 
     #[Test]
-    #[TestDox('fromDer: throws for non-minimal DER length encoding')]
+    #[TestDox('fromDer: throws InvalidDerSignature for non-minimal DER length encoding')]
     public function from_der_throws_for_non_minimal_length(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidDerSignature::class);
         $this->expectExceptionMessage('non-minimal');
 
         EcdsaSignature::fromDer("\x30\x81\x06\x02\x01\x01\x02\x01\x01", Curve::P256);
     }
 
     #[Test]
-    #[TestDox('fromDer: throws for non-minimal multi-byte DER length encoding')]
+    #[TestDox('fromDer: throws InvalidDerSignature for non-minimal multi-byte DER length encoding')]
     public function from_der_throws_for_non_minimal_multi_byte_length(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidDerSignature::class);
         $this->expectExceptionMessage('more octets than necessary');
 
         $secondIntValue = str_repeat("\x00", 128);
@@ -325,10 +387,10 @@ final class EcdsaSignatureTest extends TestCase
     }
 
     #[Test]
-    #[TestDox('fromDer: throws when DER length field exceeds 4 bytes')]
+    #[TestDox('fromDer: throws InvalidDerSignature when DER length field exceeds 4 bytes')]
     public function from_der_throws_for_excessive_length_bytes(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidDerSignature::class);
         $this->expectExceptionMessage('exceeds 4 bytes');
 
         EcdsaSignature::fromDer("\x30\x0B\x02\x85\x00\x00\x00\x00\x01\x02\x01\x01\x01", Curve::P256);
@@ -339,10 +401,10 @@ final class EcdsaSignatureTest extends TestCase
     // ---------------------------------------------------------------
 
     #[Test]
-    #[TestDox('fromDer: rejects R=0 (zero value)')]
+    #[TestDox('fromDer: rejects R=0 with InvalidSignatureComponent')]
     public function from_der_rejects_zero_r(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidSignatureComponent::class);
         $this->expectExceptionMessage('R component must be greater than zero');
 
         // SEQUENCE { INTEGER(0x00), INTEGER(0x01) }
@@ -352,10 +414,10 @@ final class EcdsaSignatureTest extends TestCase
     }
 
     #[Test]
-    #[TestDox('fromDer: rejects S=0 (zero value)')]
+    #[TestDox('fromDer: rejects S=0 with InvalidSignatureComponent')]
     public function from_der_rejects_zero_s(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidSignatureComponent::class);
         $this->expectExceptionMessage('S component must be greater than zero');
 
         // SEQUENCE { INTEGER(0x01), INTEGER(0x00) }
@@ -368,7 +430,7 @@ final class EcdsaSignatureTest extends TestCase
     #[TestDox('fromDer: rejects ES512 component exceeding curve order')]
     public function from_der_rejects_es512_exceeding_order(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidSignatureComponent::class);
         $this->expectExceptionMessage('must be less than the curve order');
 
         // R = 0x00 (sign pad) + 0x82 + 65 zero bytes = 67-byte DER INTEGER value
@@ -385,20 +447,20 @@ final class EcdsaSignatureTest extends TestCase
     // ---------------------------------------------------------------
 
     #[Test]
-    #[TestDox('fromRaw: throws for too-short raw signature')]
+    #[TestDox('fromRaw: throws InvalidRawSignature for too-short raw signature')]
     public function from_raw_throws_for_short_raw(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidRawSignature::class);
         $this->expectExceptionMessage('exactly 64 bytes');
 
         EcdsaSignature::fromRaw(str_repeat("\x01", 63), Curve::P256);
     }
 
     #[Test]
-    #[TestDox('fromRaw: throws for too-long raw signature')]
+    #[TestDox('fromRaw: throws InvalidRawSignature for too-long raw signature')]
     public function from_raw_throws_for_long_raw(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidRawSignature::class);
         $this->expectExceptionMessage('exactly 64 bytes');
 
         EcdsaSignature::fromRaw(str_repeat("\x01", 65), Curve::P256);
@@ -408,7 +470,7 @@ final class EcdsaSignatureTest extends TestCase
     #[TestDox('fromRaw: rejects 128-byte input for ES512 (must be 132)')]
     public function from_raw_rejects_old_es512_length(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidRawSignature::class);
         $this->expectExceptionMessage('exactly 132 bytes');
 
         EcdsaSignature::fromRaw(str_repeat("\x01", 128), Curve::P521);
@@ -418,7 +480,7 @@ final class EcdsaSignatureTest extends TestCase
     #[TestDox('fromRaw: rejects wrong-length input for ES384')]
     public function from_raw_rejects_wrong_es384_length(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidRawSignature::class);
         $this->expectExceptionMessage('exactly 96 bytes');
 
         EcdsaSignature::fromRaw(str_repeat("\x01", 64), Curve::P384);
@@ -429,10 +491,10 @@ final class EcdsaSignatureTest extends TestCase
     // ---------------------------------------------------------------
 
     #[Test]
-    #[TestDox('fromRaw: rejects R=0')]
+    #[TestDox('fromRaw: rejects R=0 with InvalidSignatureComponent')]
     public function from_raw_rejects_zero_r(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidSignatureComponent::class);
         $this->expectExceptionMessage('R component must be greater than zero');
 
         $r = str_repeat("\x00", 32);
@@ -442,10 +504,10 @@ final class EcdsaSignatureTest extends TestCase
     }
 
     #[Test]
-    #[TestDox('fromRaw: rejects S=0')]
+    #[TestDox('fromRaw: rejects S=0 with InvalidSignatureComponent')]
     public function from_raw_rejects_zero_s(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidSignatureComponent::class);
         $this->expectExceptionMessage('S component must be greater than zero');
 
         $r = str_pad("\x01", 32, "\x00", STR_PAD_LEFT);
@@ -458,7 +520,7 @@ final class EcdsaSignatureTest extends TestCase
     #[TestDox('fromRaw: rejects both R and S as zero')]
     public function from_raw_rejects_both_zero(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidSignatureComponent::class);
         $this->expectExceptionMessage('must be greater than zero');
 
         EcdsaSignature::fromRaw(str_repeat("\x00", 64), Curve::P256);
@@ -468,7 +530,7 @@ final class EcdsaSignatureTest extends TestCase
     #[TestDox('fromRaw: rejects R exactly equal to curve order')]
     public function from_raw_rejects_r_equal_to_order(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidSignatureComponent::class);
         $this->expectExceptionMessage('must be less than the curve order');
 
         $order = Curve::P256->order();
@@ -481,7 +543,7 @@ final class EcdsaSignatureTest extends TestCase
     #[TestDox('fromRaw: rejects S exactly equal to curve order')]
     public function from_raw_rejects_s_equal_to_order(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidSignatureComponent::class);
         $this->expectExceptionMessage('must be less than the curve order');
 
         $r = str_pad("\x01", 32, "\x00", STR_PAD_LEFT);
@@ -494,7 +556,7 @@ final class EcdsaSignatureTest extends TestCase
     #[TestDox('fromRaw: rejects R exceeding curve order (all 0xFF for P-256)')]
     public function from_raw_rejects_r_exceeding_order(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidSignatureComponent::class);
         $this->expectExceptionMessage('must be less than the curve order');
 
         $r = str_repeat("\xFF", 32);
@@ -531,7 +593,7 @@ final class EcdsaSignatureTest extends TestCase
     #[TestDox('fromRaw: rejects ES512 R exceeding curve order')]
     public function from_raw_rejects_es512_r_exceeding_order(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidSignatureComponent::class);
         $this->expectExceptionMessage('must be less than the curve order');
 
         // R starts with 0x02 → exceeds P-521 order (starts with 0x01)
@@ -545,7 +607,7 @@ final class EcdsaSignatureTest extends TestCase
     #[TestDox('fromRaw: rejects ES512 S exceeding curve order')]
     public function from_raw_rejects_es512_s_exceeding_order(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidSignatureComponent::class);
         $this->expectExceptionMessage('must be less than the curve order');
 
         $r = str_pad("\x01", 66, "\x00", STR_PAD_LEFT);
@@ -558,7 +620,7 @@ final class EcdsaSignatureTest extends TestCase
     #[TestDox('fromRaw: rejects ES384 zero components')]
     public function from_raw_rejects_es384_zero(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidSignatureComponent::class);
         $this->expectExceptionMessage('must be greater than zero');
 
         EcdsaSignature::fromRaw(str_repeat("\x00", 96), Curve::P384);
@@ -568,7 +630,7 @@ final class EcdsaSignatureTest extends TestCase
     #[TestDox('fromRaw: rejects ES384 all-0xFF (exceeds order)')]
     public function from_raw_rejects_es384_all_ff(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidSignatureComponent::class);
         $this->expectExceptionMessage('must be less than the curve order');
 
         $r = str_repeat("\xFF", 48);
@@ -581,7 +643,7 @@ final class EcdsaSignatureTest extends TestCase
     #[TestDox('fromRaw: rejects ES512 zero components')]
     public function from_raw_rejects_es512_zero(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(InvalidSignatureComponent::class);
         $this->expectExceptionMessage('must be greater than zero');
 
         EcdsaSignature::fromRaw(str_repeat("\x00", 132), Curve::P521);
@@ -876,5 +938,23 @@ final class EcdsaSignatureTest extends TestCase
             $derAgain = EcdsaSignature::fromRaw($raw, $curve)->toDer();
             $this->assertSame(1, openssl_verify($payload, $derAgain, $publicKey, $algo));
         }
+    }
+
+    // ---------------------------------------------------------------
+    // Round-trip with OpenSSL using Curve helper methods
+    // ---------------------------------------------------------------
+
+    #[Test]
+    #[TestDox('Round-trip: Curve::fromJoseAlg and openSslCurveName work end-to-end')]
+    public function round_trip_using_curve_helpers(): void
+    {
+        $curve = Curve::fromJoseAlg('ES256');
+        $ecKey = self::createEcKey($curve->openSslCurveName());
+
+        $this->assertTrue(openssl_sign('test', $der, $ecKey, OPENSSL_ALGO_SHA256));
+
+        $sig = EcdsaSignature::fromDer($der, $curve);
+        $this->assertSame(64, strlen($sig->toRaw()));
+        $this->assertSame('ES256', $sig->curve()->joseAlg());
     }
 }
