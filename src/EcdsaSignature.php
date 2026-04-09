@@ -7,56 +7,41 @@ namespace StudioDesign\EcdsaSignature;
 use InvalidArgumentException;
 
 /**
- * Converts ECDSA signatures from ASN.1 DER to JWS raw (R||S) format and vice versa.
+ * Immutable value object representing an ECDSA signature (r, s) on a named curve.
  *
- * OpenSSL and Cloud KMS return DER-encoded ECDSA signatures, but JWT/JWS (RFC 7518 Section 3.4)
- * requires raw concatenated (R || S) format with fixed-length components.
+ * Supports conversion between ASN.1 DER and JWS raw (R||S) formats, and
+ * guarantees that both components satisfy 0 < value < n (curve order).
  *
  * Supported JOSE key-size identifiers:
  *   - 256 (ES256 / P-256)  → 64-byte raw signature
  *   - 384 (ES384 / P-384)  → 96-byte raw signature
- *   - 512 (ES512 / P-521)  → 132-byte raw signature (P-521 is a 521-bit curve; JOSE names it "ES512")
+ *   - 512 (ES512 / P-521)  → 132-byte raw signature
  *
  * @see https://www.rfc-editor.org/rfc/rfc7518#section-3.4
  */
-final readonly class EcdsaSignatureConverter
+final readonly class EcdsaSignature
 {
-    /** @var array<int, int> Map of JOSE algorithm key-size number to per-component byte length */
-    private const COMPONENT_LENGTHS = [
-        256 => 32,  // P-256: 256 / 8
-        384 => 48,  // P-384: 384 / 8
-        512 => 66,  // P-521 (ES512): ceil(521 / 8) — JOSE uses "512", actual curve is 521 bits
-    ];
+    /**
+     * @param string $r     Fixed-length R component (componentLength bytes, big-endian)
+     * @param string $s     Fixed-length S component (componentLength bytes, big-endian)
+     * @param Curve  $curve The elliptic curve this signature belongs to
+     */
+    private function __construct(
+        private string $r,
+        private string $s,
+        private Curve $curve,
+    ) {}
 
     /**
-     * Bitmask of invalid bits in the leading byte of each component.
+     * Create an EcdsaSignature from a DER-encoded ASN.1 SEQUENCE containing two INTEGERs.
      *
-     * When the curve's bit length is not a multiple of 8, the leading byte of a
-     * fixed-length component has unused high bits that must be zero.
-     * P-521 (ES512): 521 bits in 66 bytes → top 7 bits unused → mask 0xFE.
+     * @param string $der   DER-encoded signature
+     * @param Curve  $curve The elliptic curve
      *
-     * @var array<int, int>
+     * @throws InvalidArgumentException If the DER data is malformed or values are out of range
      */
-    private const LEADING_BYTE_MASKS = [
-        256 => 0x00,  // P-256: 256 bits = 32 bytes exactly, all bits used
-        384 => 0x00,  // P-384: 384 bits = 48 bytes exactly, all bits used
-        512 => 0xFE,  // P-521: 521 bits in 66 bytes, top 7 bits of first byte must be zero
-    ];
-
-    /**
-     * Convert a DER-encoded ECDSA signature to JWS raw (R||S) format.
-     *
-     * @param string $der         DER-encoded ASN.1 SEQUENCE containing two INTEGERs (r, s)
-     * @param int    $keySizeBits ECDSA key size in bits as used by JOSE algorithm names (256 for ES256/P-256, 384 for ES384/P-384, 512 for ES512/P-521). Note: ES512 uses the P-521 curve (521 bits), yielding 66-byte components.
-     *
-     * @return string Raw signature: R || S, each component padded to the curve's fixed byte length (32 for ES256, 48 for ES384, 66 for ES512)
-     *
-     * @throws InvalidArgumentException If the DER data is malformed or the key size is unsupported
-     */
-    public static function derToRaw(string $der, int $keySizeBits): string
+    public static function fromDer(string $der, Curve $curve): self
     {
-        self::validateKeySize($keySizeBits);
-
         if (strlen($der) < 8) {
             throw new InvalidArgumentException('DER signature is too short to be a valid ECDSA signature.');
         }
@@ -65,7 +50,7 @@ final readonly class EcdsaSignatureConverter
             throw new InvalidArgumentException('DER signature does not start with SEQUENCE tag (0x30).');
         }
 
-        $componentLength = self::COMPONENT_LENGTHS[$keySizeBits];
+        $componentLength = $curve->componentLength();
 
         // Parse DER SEQUENCE envelope
         ['offset' => $offset, 'contentEnd' => $seqEnd] = self::readDer($der);
@@ -105,91 +90,116 @@ final readonly class EcdsaSignatureConverter
 
         // Validate DER INTEGER encoding (X.690 Section 8.3.2: minimal encoding required)
         // and strip the sign-padding byte from R and S components.
-        $r = self::validateAndStripComponent($r, 'R', $componentLength, $keySizeBits);
-        $s = self::validateAndStripComponent($s, 'S', $componentLength, $keySizeBits);
+        $r = self::validateAndStripComponent($r, 'R', $curve);
+        $s = self::validateAndStripComponent($s, 'S', $curve);
 
-        // Pad to fixed length for JWS format
+        // Pad to fixed length
         $r = str_pad($r, $componentLength, "\x00", STR_PAD_LEFT);
         $s = str_pad($s, $componentLength, "\x00", STR_PAD_LEFT);
 
-        // Validate that components fit within the curve's actual bit range
-        self::validateComponentBitRange($r, 'R', $keySizeBits);
-        self::validateComponentBitRange($s, 'S', $keySizeBits);
+        // Validate 0 < r < n and 0 < s < n
+        self::validateRange($r, 'R', $curve);
+        self::validateRange($s, 'S', $curve);
 
-        return $r.$s;
+        return new self($r, $s, $curve);
     }
 
     /**
-     * Convert a JWS raw (R||S) ECDSA signature to ASN.1 DER format.
+     * Create an EcdsaSignature from a JWS raw (R||S) signature.
      *
-     * @param string $raw         Raw signature: R || S (each component: 32 bytes for ES256, 48 for ES384, 66 for ES512)
-     * @param int    $keySizeBits ECDSA key size in bits as used by JOSE algorithm names (256 for ES256/P-256, 384 for ES384/P-384, 512 for ES512/P-521). Note: ES512 uses the P-521 curve (521 bits), yielding 66-byte components.
+     * @param string $raw   Raw signature: R || S (each component padded to fixed length)
+     * @param Curve  $curve The elliptic curve
      *
-     * @return string DER-encoded ASN.1 SEQUENCE containing two INTEGERs (r, s)
-     *
-     * @throws InvalidArgumentException If the raw signature length is invalid or the key size is unsupported
+     * @throws InvalidArgumentException If the raw signature length is invalid or values are out of range
      */
-    public static function rawToDer(string $raw, int $keySizeBits): string
+    public static function fromRaw(string $raw, Curve $curve): self
     {
-        self::validateKeySize($keySizeBits);
-
-        $componentLength = self::COMPONENT_LENGTHS[$keySizeBits];
+        $componentLength = $curve->componentLength();
         $expectedLength = $componentLength * 2;
 
         if (strlen($raw) !== $expectedLength) {
-            throw new InvalidArgumentException("Raw signature must be exactly {$expectedLength} bytes for {$keySizeBits}-bit key, got ".strlen($raw).'.');
+            throw new InvalidArgumentException("Raw signature must be exactly {$expectedLength} bytes for ES{$curve->value}, got ".strlen($raw).'.');
         }
 
         $r = substr($raw, 0, $componentLength);
         $s = substr($raw, $componentLength);
 
-        // Validate that components fit within the curve's actual bit range
-        self::validateComponentBitRange($r, 'R', $keySizeBits);
-        self::validateComponentBitRange($s, 'S', $keySizeBits);
+        // Validate 0 < r < n and 0 < s < n
+        self::validateRange($r, 'R', $curve);
+        self::validateRange($s, 'S', $curve);
 
-        $derR = self::toDerInteger($r);
-        $derS = self::toDerInteger($s);
-
-        $derBody = $derR.$derS;
-
-        return self::encodeDer(0x30, $derBody);
+        return new self($r, $s, $curve);
     }
 
     /**
+     * Encode this signature as ASN.1 DER.
+     *
+     * @return string DER-encoded SEQUENCE containing two INTEGERs (r, s)
+     */
+    public function toDer(): string
+    {
+        $derR = self::toDerInteger($this->r);
+        $derS = self::toDerInteger($this->s);
+
+        return self::encodeDer(0x30, $derR.$derS);
+    }
+
+    /**
+     * Encode this signature as JWS raw (R||S) format.
+     *
+     * @return string Raw signature: R || S, each component at fixed length
+     */
+    public function toRaw(): string
+    {
+        return $this->r.$this->s;
+    }
+
+    /**
+     * R component as a fixed-length big-endian binary string.
+     */
+    public function r(): string
+    {
+        return $this->r;
+    }
+
+    /**
+     * S component as a fixed-length big-endian binary string.
+     */
+    public function s(): string
+    {
+        return $this->s;
+    }
+
+    /**
+     * The elliptic curve this signature belongs to.
+     */
+    public function curve(): Curve
+    {
+        return $this->curve;
+    }
+
+    /**
+     * Validate that a component value satisfies 0 < value < n (curve order).
+     *
+     * @param string $value Fixed-length component (componentLength bytes)
+     *
      * @throws InvalidArgumentException
      */
-    private static function validateKeySize(int $keySizeBits): void
+    private static function validateRange(string $value, string $label, Curve $curve): void
     {
-        if (! array_key_exists($keySizeBits, self::COMPONENT_LENGTHS)) {
-            throw new InvalidArgumentException(
-                "Unsupported key size: {$keySizeBits}. Supported sizes: ".implode(', ', array_keys(self::COMPONENT_LENGTHS)).'.',
-            );
+        $zero = str_repeat("\x00", $curve->componentLength());
+
+        if ($value === $zero) {
+            throw new InvalidArgumentException("ECDSA {$label} component must be greater than zero.");
+        }
+
+        if (strcmp($value, $curve->order()) >= 0) {
+            throw new InvalidArgumentException("ECDSA {$label} component must be less than the curve order for ES{$curve->value}.");
         }
     }
 
     /**
-     * Validate that a fixed-length component does not exceed the curve's bit range.
-     *
-     * For curves whose bit length is not a multiple of 8 (e.g. P-521 = 521 bits
-     * in 66 bytes), the leading byte has unused high bits that must be zero.
-     *
-     * @param string $component Fixed-length component (already padded or from raw input)
-     *
-     * @throws InvalidArgumentException
-     */
-    private static function validateComponentBitRange(string $component, string $label, int $keySizeBits): void
-    {
-        $mask = self::LEADING_BYTE_MASKS[$keySizeBits];
-
-        if ($mask !== 0x00 && (ord($component[0]) & $mask) !== 0) {
-            throw new InvalidArgumentException(
-                "ECDSA {$label} component exceeds the valid bit range for ES{$keySizeBits} (P-521 values must fit in 521 bits).",
-            );
-        }
-    }
-
-    /**
-     * Validate a DER INTEGER component and strip the sign-padding byte for JWS format.
+     * Validate a DER INTEGER component and strip the sign-padding byte.
      *
      * DER INTEGERs are signed two's complement — a set high bit means the value is
      * negative, which is invalid for ECDSA R/S values that must be positive.
@@ -201,7 +211,7 @@ final readonly class EcdsaSignatureConverter
      *
      * @throws InvalidArgumentException
      */
-    private static function validateAndStripComponent(string $value, string $label, int $componentLength, int $keySizeBits): string
+    private static function validateAndStripComponent(string $value, string $label, Curve $curve): string
     {
         if ((ord($value[0]) & 0x80) !== 0) {
             throw new InvalidArgumentException("DER INTEGER {$label} component is negative, which is invalid for ECDSA signatures.");
@@ -220,10 +230,12 @@ final readonly class EcdsaSignatureConverter
             $value = substr($value, 1);
         }
 
+        $componentLength = $curve->componentLength();
+
         if (strlen($value) > $componentLength) {
             $len = strlen($value);
             throw new InvalidArgumentException(
-                "DER INTEGER {$label} value ({$len} bytes) exceeds {$componentLength}-byte limit for {$keySizeBits}-bit key.",
+                "DER INTEGER {$label} value ({$len} bytes) exceeds {$componentLength}-byte limit for ES{$curve->value}.",
             );
         }
 
@@ -273,10 +285,8 @@ final readonly class EcdsaSignatureConverter
      * Read a single DER tag-length-value triplet.
      *
      * For constructed types (SEQUENCE), returns null as data and sets the offset
-     * to the start of the content area — the caller should parse children from
-     * this offset up to the content-end position.
-     * For primitive types (INTEGER), returns the raw value bytes and sets the
-     * offset to the byte after the last content byte (equal to contentEnd).
+     * to the start of the content area. For primitive types (INTEGER), returns the
+     * raw value bytes.
      *
      * @return array{offset: int, data: string|null, tag: int, contentEnd: int}
      *
@@ -292,12 +302,10 @@ final readonly class EcdsaSignatureConverter
 
         $pos = $offset;
 
-        // ASN.1 tag byte (X.690 Section 8.1.2.2):
-        //   bits 7-6 = class (Universal=0b00), bit 5 = constructed flag, bits 4-0 = tag number
+        // ASN.1 tag byte (X.690 Section 8.1.2.2)
         $tagByte = ord($der[$pos]);
 
-        // Reject non-Universal class tags (X.690 Section 8.1.2.2: class bits are bits 7-6).
-        // ECDSA signatures only use Universal class types (SEQUENCE 0x30, INTEGER 0x02).
+        // Reject non-Universal class tags
         if (($tagByte & 0xC0) !== 0x00) {
             throw new InvalidArgumentException(
                 sprintf('DER non-Universal class tag (0x%02X) is not supported for ECDSA signatures.', $tagByte),
@@ -341,9 +349,7 @@ final readonly class EcdsaSignatureConverter
                 throw new InvalidArgumentException('DER data truncated: multi-byte length field is incomplete.');
             }
 
-            // Guard against integer overflow on 32-bit PHP: accumulating 4 length bytes via
-            // left-shifts can set the sign bit of a 32-bit signed integer, producing a negative
-            // $len. Untestable on 64-bit platforms where PHP_INT_SIZE >= 8.
+            // Guard against integer overflow on 32-bit PHP
             // @codeCoverageIgnoreStart
             if ($len < 0) {
                 throw new InvalidArgumentException('DER length field overflowed integer range.');
@@ -363,10 +369,8 @@ final readonly class EcdsaSignatureConverter
             throw new InvalidArgumentException('DER data truncated: value extends beyond data length.');
         }
 
-        // Content-end position: for all types, this is the byte after the last content byte
         $contentEnd = $pos + $len;
 
-        // Value: ECDSA signatures contain only SEQUENCE (constructed) and INTEGER (primitive).
         if ($constructed) {
             $data = null;
         } else {

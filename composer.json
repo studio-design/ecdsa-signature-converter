@@ -1,7 +1,7 @@
 {
-    "name": "studio-design/ecdsa-signature-converter",
-    "description": "Converts ECDSA signatures between ASN.1 DER and JWS raw (R||S) formats. Useful for Cloud KMS/HSM-based JWT signing where OpenSSL/KMS returns DER but JWT (RFC 7518) requires raw format.",
-    "keywords": ["ecdsa", "jwt", "jws", "der", "signature", "kms", "hsm", "rfc7518"],
+    "name": "studio-design/ecdsa-signature",
+    "description": "ECDSA signature value object with DER/JWS raw format conversion and curve-order validation. For Cloud KMS/HSM-based JWT signing where OpenSSL/KMS returns DER but JWT (RFC 7518) requires raw format.",
+    "keywords": ["ecdsa", "jwt", "jws", "der", "signature", "kms", "hsm", "rfc7518", "validation"],
     "type": "library",
     "license": "MIT",
     "authors": [
